@@ -1,0 +1,46 @@
+rng: mean -0.0010, var 0.9990, kurtosis 2.997 (3), lag-1 corr +0.0005; bridge bisection to dt/2^8: leaf increment var / (2 D dt_L) = 0.9999, lag-1 corr +0.0016
+free: increment var / (2 D dt) = 1.0010; MSD / (6 D t) at 1 steps: 0.990, 10 steps: 0.994, 100 steps: 1.004, 200 steps: 1.001
+walls, sugar, dt: 20000 steps (0.29 ms), escapes 0; wall-distance bins occupancy/expected 0.965 1.038 1.035 1.009 0.992 1.005 1.002 0.997 0.999 1.001; chi2 13.2/10, axial chi2 10.0/20
+walls, sugar, dt/4: 80000 steps (0.29 ms), escapes 0; wall-distance bins occupancy/expected 1.006 0.977 0.989 0.990 0.996 0.997 1.004 0.998 1.005 0.996; chi2 7.8/10, axial chi2 26.3/20
+walls, sugar, dt/16: 80000 steps (0.07 ms), escapes 0; wall-distance bins occupancy/expected 0.983 0.996 0.983 0.994 1.010 1.005 1.001 0.999 1.000 0.999; chi2 4.3/10, axial chi2 11.3/20
+walls, protein, dt: 20000 steps (0.29 ms), escapes 0; wall-distance bins occupancy/expected 0.994 1.007 0.994 1.016 1.003 1.003 1.001 1.001 0.993 1.005; chi2 10.1/10, axial chi2 23.4/20
+benchmark: free space, r0 = 2a, 100000 runs, 11 s. P(T <= t): exact | L=... (binomial SE ~ 0.0016)
+   t/dt   exact  L=0    L=2    L=4    L=6    L=8    L=10 
+      1  0.0025  0.0012  0.0013  0.0017  0.0020  0.0023  0.0024
+      2  0.0237  0.0101  0.0143  0.0180  0.0204  0.0218  0.0226
+      5  0.1049  0.0573  0.0763  0.0895  0.0973  0.1015  0.1034
+     10  0.1875  0.1172  0.1486  0.1678  0.1778  0.1834  0.1860
+     20  0.2653  0.1819  0.2206  0.2432  0.2548  0.2610  0.2642
+     50  0.3458  0.2538  0.2973  0.3219  0.3341  0.3402  0.3430
+    100  0.3896  0.2949  0.3401  0.3651  0.3775  0.3836  0.3865
+    200  0.4214  0.3257  0.3721  0.3972  0.4096  0.4156  0.4187
+    500  0.4501  0.3534  0.4013  0.4267  0.4394  0.4455  0.4485
+   1000  0.4647  0.3671  0.4154  0.4409  0.4534  0.4595  0.4626
+   2000  0.4750  0.3773  0.4258  0.4512  0.4637  0.4699  0.4729
+sphere exact, dt/1, L=0: mean 0.06198 +- 0.00100 s, exact 0.04917 -> ratio 1.2604 +- 0.0203
+sphere exact, dt/1, L=10: mean 0.05021 +- 0.00078 s, exact 0.04917 -> ratio 1.0212 +- 0.0159
+sphere exact, dt/4, L=0: mean 0.05508 +- 0.00088 s, exact 0.04917 -> ratio 1.1201 +- 0.0178
+sphere exact, dt/4, L=10: mean 0.04995 +- 0.00080 s, exact 0.04917 -> ratio 1.0157 +- 0.0164
+split, protein fixed: mean 0.0500 +- 0.0011 s, ratio to V/(4 pi D_rel a) 0.991 +- 0.022
+split, real split: mean 0.0550 +- 0.0012 s, ratio to V/(4 pi D_rel a) 1.090 +- 0.024
+split, equal split: mean 0.0541 +- 0.0012 s, ratio to V/(4 pi D_rel a) 1.072 +- 0.024
+split, sugar fixed: mean 0.0485 +- 0.0011 s, ratio to V/(4 pi D_rel a) 0.961 +- 0.021
+split, real split, equal steric radii: mean 0.0544 +- 0.0012 s, ratio to V/(4 pi D_rel a) 1.078 +- 0.024
+split, real split, other seeds: mean 0.0530 +- 0.0012 s, ratio to V/(4 pi D_rel a) 1.050 +- 0.024
+split, real split, dt/4: mean 0.0533 +- 0.0011 s, ratio to V/(4 pi D_rel a) 1.057 +- 0.023
+finite size, a = 2.86 nm (a/R 0.0114): mean 0.05260 +- 0.00081 s, excess over estimate +4.3 +- 1.6 %
+finite size, a = 1.43 nm (a/R 0.0057): mean 0.09997 +- 0.00156 s, excess over estimate -0.9 +- 1.5 %
+pairs, both mobile: P(|r| < 20 nm) 4.8369e-04 vs independent uniform 4.9925e-04 -> ratio 0.969
+pairs, protein fixed: P(|r| < 20 nm) 4.8994e-04 vs independent uniform 4.9925e-04 -> ratio 0.981
+capsule A: 512 runs (seeds 5000-5511), opposite poles; small-target estimate 1.009 s
+  L=0  mean 1.3927 +- 0.0587 s, median 0.9932, censored 0  next L: +0.1074 +- 0.0220 s, 66 runs change by > 1 us
+  L=2  mean 1.2853 +- 0.0545 s, median 0.9276, censored 0  next L: +0.0371 +- 0.0091 s, 41 runs change by > 1 us
+  L=4  mean 1.2482 +- 0.0536 s, median 0.8926, censored 0  next L: +0.0279 +- 0.0134 s, 13 runs change by > 1 us
+  L=6  mean 1.2204 +- 0.0519 s, median 0.8897, censored 0  next L: +0.0018 +- 0.0013 s, 5 runs change by > 1 us
+  L=8  mean 1.2185 +- 0.0520 s, median 0.8749, censored 0  next L: +0.0070 +- 0.0039 s, 5 runs change by > 1 us
+  L=10 mean 1.2115 +- 0.0519 s, median 0.8679, censored 0
+capsule B: 512 runs (seeds 200000-), opposite poles: mean 1.0628 +- 0.0467 s
+capsule C: 512 runs, uniform random starts: mean 1.0452 +- 0.0474 s
+capsule pooled A+B (opposite poles, L=10): mean 1.1372 +- 0.0349 s, median 0.8035 s
+display: event time for pixels_across 64/32/128: 1.000853256, 1.000853256, 1.000853256 (identical: True); final separation 2.860000000, 2.860000000, 2.860000000 nm (encounter distance 2.86 nm)
+convergence (seeds 0-63): restricted mean by L: L=0: 1.4282, L=2: 1.1632, L=4: 1.0974, L=6: 1.0698, L=8: 1.0698, L=10: 1.0698; runs whose time differs from L=10 by > 1 us: {0: 12, 2: 5, 4: 1, 6: 0, 8: 0, 10: 0}; seed 29: {0: 1.0008532753129362, 2: 1.0008532788545066, 4: 1.000853278950051, 6: 1.0008532783560138, 8: 1.0008532566894721, 10: 1.0008532561101333}
