@@ -24,3 +24,33 @@ Change directory paths in each of the files as needed.
 `combine-*` are both ImageJ scripts.
 
 The output TIF files are pretty large, so use `combine-tifs.ijm` to combine separate batches. Put all files to be combined into one folder and run `combine-tifs` for that folder. If stacks are named `{NAME}{NUM}` and they are in the same folder, they will be run in the order of `{NUM}`.
+
+## `goodsell.py`: diffusion in a bacterium (Figure 1)
+
+`goodsell.py` reproduces Figure 1 of the Perspective, a Brownian dynamics simulation revisiting an in silico experiment by David Goodsell (*The Machinery of Life*, 2nd ed., p. 6).
+A sugar (glucose, red) and a typical protein (GFP-sized, blue) start at opposite poles of a 1 × 2 µm bacterium and diffuse until they first touch.
+
+```
+python goodsell.py                 # -> goodsell_output/goodsell_fig1.png/.svg/.pdf (~15 s)
+python goodsell.py --no-labels     # same figure without text
+python goodsell.py --find-seed     # redo the seed choice from 64 runs (~3 min)
+```
+
+- **Physics** (from the Figure 1 caption):
+  - The cell is a capsule 1 µm wide and 2 µm long; viscosity 20 mPa·s (~30× water); 37 °C.
+  - Stokes radii are 2.5 nm (protein) and 0.36 nm (glucose).
+  - Stokes–Einstein then gives D = 4.5 µm²/s for the protein and 31.6 µm²/s for the sugar.
+- **Simulation:**
+  - Off-lattice 3D Brownian dynamics with reflecting walls, dt = 14.4 ns.
+  - The run stops at first contact, when the two centres come within 2.86 nm.
+- **Panels:**
+  - 5, 10 and 15 ms, then the complete paths up to first contact.
+  - The early panel times are the ones at which the simulated paths match the extent of the traces in Goodsell's drawing, which has no time labels.
+- **Check against *Cell Biology by the Numbers*** ([How many reactions do enzymes carry out each second?](https://book.bionumbers.org/how-many-reactions-do-enzymes-carry-out-each-second/)):
+  - That estimate: a diffusion-limited rate constant of ~10⁹ M⁻¹s⁻¹ for a protein and a small molecule, times ~1 nM (one molecule per *E. coli*), gives ≈ 1 s⁻¹: "they will meet within a second on average".
+  - With these parameters: k_on = 4π(D_p + D_s)(r_p + r_s) = 7.8 × 10⁸ M⁻¹s⁻¹. One molecule in this 1.31 µm³ cell is 1.27 nM, so the rate is 0.99 s⁻¹ (mean wait 1.0 s).
+  - The simulated mean is a little longer (1.4 s) because the two molecules start at opposite poles rather than at random positions.
+- **Seed 29:** of seeds 0–63, the run whose first contact (1.001 s) is closest to Goodsell's "about a second".
+  - Contact times are broadly spread; seeds 0–63 give a median of 0.92 s.
+
+Requires `numpy`, `matplotlib`, `numba`.
