@@ -24,8 +24,7 @@ distance. Both molecules start on the long axis, 0.1 um from their pole.
 Choices that only affect the drawing:
   * panel times 5, 10, 15 ms: the extents of the red and blue traces in Goodsell's
     drawing (which has no time labels) match the median simulated paths at T/4, T/2,
-    3T/4 with T ~ 20 ms. An earlier adapted version of the figure labelled its panels
-    0.25-1 s, 30-50x too long for these physics;
+    3T/4 with T ~ 20 ms;
   * seed 29: of seeds 0-63, the run whose first contact (1.001 s) is closest to
     Goodsell's "about a second". First-contact times are broadly spread (roughly
     exponential): seeds 0-63 give a median of 0.92 s and a mean of 1.43 s; an
