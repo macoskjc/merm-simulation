@@ -12,9 +12,13 @@ Everything is seeded, so the same command redraws the same picture:
     python cover_art.py                  # -> cover_output/  (~15 s)
     python cover_art.py --seed 3         # a different (but again reproducible) draw
 
-Seed choice (illustration only, like goodsell.py's seed 29): in Song's model, 55% of
-RNPs started 7.5 um out reach the membrane within 20 min, with ~45 directed runs each
-(64-RNP ensemble). Seed 7 is a typical draw: 5 of its 8 RNPs reach the membrane.
+Directed motion uses the paper's p_driv = 0.004 (0.4% of the time; see sim-paper.pdf,
+Appendix), not run.py's default of 0.03. With 0.004 the simulation reproduces the
+Perspective's 16.4% directed / 83.6% motor-enhanced split.
+
+Seed choice (illustration only, like goodsell.py's seed 29): at p_driv = 0.004, 59% of
+RNPs started 7.5 um out reach the membrane within 20 min, with ~5.8 directed runs each
+(64-RNP ensemble). Of seeds 1-24, seed 17 is closest to both: 5 of 8 exit, 5.9 runs/RNP.
 
 Outputs (all 8.5 x 11 in, 300 dpi, pixel-aligned so they stack):
     cover_mockup.png / .pdf      full composition with page colour, labels and a
@@ -78,8 +82,8 @@ def um_to_pt(um):
 
 # ------------------------------------------------------------------ simulations
 
-def simulate_rnps(sim, n, minutes, seed, rotation):
-    cfg = sim.SimulationConfig(total_time=int(minutes * 60), n_particles=n)
+def simulate_rnps(sim, n, minutes, seed, rotation, p_driv):
+    cfg = sim.SimulationConfig(total_time=int(minutes * 60), n_particles=n, p_driv=p_driv)
     tracks = []
     for i in range(n):
         seed_numba(seed * 1000 + i)
@@ -142,7 +146,7 @@ def draw(sim, g, tracks, protein, bact, args):
         layer[name].append(artist)
         return artist
 
-    fs = um_to_pt(0.55)                                        # label font size
+    fs = um_to_pt(0.70)                                        # label font size
     halo = [patheffects.withStroke(linewidth=um_to_pt(0.12), foreground=CYTOPLASM)]
 
     # page + masthead placeholder (review mock-up only)
@@ -256,7 +260,9 @@ def save(fig, layer, outdir):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--seed", type=int, default=7, help="master seed (RNPs, k, protein)")
+    ap.add_argument("--seed", type=int, default=17, help="master seed (RNPs, k, protein)")
+    ap.add_argument("--p-driv", type=float, default=0.004,
+                    help="fraction of time in directed motion (paper: 0.004)")
     ap.add_argument("--n-rnps", type=int, default=8)
     ap.add_argument("--rnp-minutes", type=float, default=20.0)
     ap.add_argument("--rotation-deg", type=float, default=0.0,
@@ -280,7 +286,7 @@ def main():
     print(f"trap stiffness k = {sim.k:.4e} N/m (simulation.py range 1.5e-6 to 2.6e-6)")
 
     _, tracks = simulate_rnps(sim, args.n_rnps, args.rnp_minutes, args.seed,
-                              np.deg2rad(args.rotation_deg))
+                              np.deg2rad(args.rotation_deg), args.p_driv)
     for i, (x, y, s, ex) in enumerate(tracks):
         print(f"  RNP {i}: {len(x) - 1} steps, directed {100 * s.mean():.1f}% of the time, "
               + (f"left the cell at {ex:.0f} s" if ex >= 0 else "stayed in the cell"))
