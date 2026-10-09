@@ -2,5 +2,8 @@ __pycache__/
 coord-test/
 sim/
 .DS_Store
-.idea
+.idea/
+venv/
 goodsell_output/
+*.prof
+*.lprof

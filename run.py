@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 from matplotlib.ticker import PercentFormatter
 from tqdm import tqdm
 import simulation as sim
+import visualize as vis
 from analysis import plot_displacement_vs_time, plot_trap_size_histogram, plot_trap_distance_histogram, compute_trap_sizes_from_simulation
 
 
@@ -280,9 +281,9 @@ def main():
     # Run GUI application
     app = QApplication(sys.argv)
 
-    # simulation = vis.SimulationVis(config)
-    # simulation.show()
-    # simulation.run_simulation()
+    simulation = vis.SimulationVis(config)
+    simulation.show()
+    simulation.run_simulation()
 
     if args.compute_flux:
         plot_flux_distribution(config)

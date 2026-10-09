@@ -1,0 +1,7 @@
+numpy
+scipy
+matplotlib
+numba
+tqdm
+PySide6
+ipykernel
