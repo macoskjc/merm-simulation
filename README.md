@@ -9,7 +9,7 @@ Motor-enhanced random motion is a form of intracellular transport in which (1) p
 ```
 ./setup.sh                 # creates venv/ and installs requirements.txt
 source venv/bin/activate
-python3 run.py --n_particles 20
+python3 run.py --n_particles 20 --p_driv 0.004
 ```
 
 This opens a live window showing the particles moving in the cell, with Play/Pause, Reset, trail and CSV-export controls.
@@ -18,13 +18,15 @@ To install by hand instead: `pip install -r requirements.txt` (numpy, scipy, mat
 
 ## Reproducing the paper's result
 
-The Perspective reports that, for particles modeled on VSV RNPs, directed motion contributes about 16.4% of the total distance traveled and motor-enhanced random motion about 83.6%. That run used 1000 particles started 7.5 µm from the center of the cell, followed for 6000 s:
+The Perspective reports that, for particles modeled on VSV RNPs, directed motion contributes about 16.4% of the total distance traveled and motor-enhanced random motion about 83.6%. That run used 1000 particles started 7.5 µm from the center of the cell, followed for 6000 s, with directed motion 0.4% of the time (`--p_driv 0.004`; derived in the appendix of `sim-paper.pdf` from the experimental observation that about 3% of 4-s tracks contain directed motion):
 
 ```
-python3 run.py --headless --compute_flux --no_csv --n_particles 1000 --total_time 6000
+MPLBACKEND=Agg python3 run.py --headless --compute_flux --no_csv --p_driv 0.004 --n_particles 1000 --total_time 6000
 ```
 
-It prints the average driven and diffusive (trap) distances and the driven fraction, and saves a histogram to `sim/`. Expect it to take many hours; fewer particles give the same fraction with a larger uncertainty.
+It prints the average driven and diffusive (trap) distances and the driven fraction, and saves a histogram to `sim/` (without `MPLBACKEND=Agg` it also opens the histogram in a window and waits for you to close it). It takes about 10 minutes on a laptop. With 100 particles (about 1 minute) we get 23.7 µm directed vs. 121.0 µm motor-enhanced, i.e. 16.4% directed (paper: 23.63 vs. 120.16 µm), and 2.96% of 4-s windows containing directed motion.
+
+Note: `--p_driv` defaults to 0.03 (the 3%-of-windows figure), not the 0.4%-of-time value used in the paper, so pass `--p_driv 0.004` to match the published results.
 
 ## Files
 
