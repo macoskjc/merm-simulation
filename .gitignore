@@ -7,3 +7,4 @@ venv/
 goodsell_output/
 *.prof
 *.lprof
+cover_output/
