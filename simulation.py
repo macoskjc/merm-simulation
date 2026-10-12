@@ -49,7 +49,9 @@ class SimulationConfig:
     """Configuration for simulation parameters"""
     total_time: int = 2000  # maximum simulation time (s)
     n_particles: int = 1
-    p_driv: float = 0.03  # probability of driven motion (0.0-1.0) should be 0.03
+    # fraction of time in directed motion; 0.004 reproduces the experimental 3% of 4-s
+    # tracks containing directed motion (Holzwarth et al. 2020; sim-paper.pdf appendix)
+    p_driv: float = 0.004
     trap_dist = TRAP_DIST  # dist of distance between traps (m)
     time_between: float = TIME_BETWEEN_STATES
     dt: float = 0.001  # time step (s)
@@ -200,7 +202,7 @@ def generate_state_duration(time_between_state_changes):
 
 @njit(cache=True)
 def _move(total_time, dt,theta, stop_on_cell_exit,
-          p_driv = 0.03, mean_driven_time = 0.6, std_driven_time  = 0.2):
+          p_driv = 0.004, mean_driven_time = 0.6, std_driven_time  = 0.2):
 
     hop_mean = 1.0; hop_std = 0.3 # Constants so that particle changes traps ~once per second
     next_hop_time = np.inf       # Initialize hopping as disabled

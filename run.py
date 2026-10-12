@@ -31,8 +31,8 @@ def parse_arguments() -> argparse.Namespace:
         help='Number of particles to simulate'
     )
     sim_group.add_argument(
-        '--p_driv', type=float, default=0.03,
-        help='Probability of driven motion (0.0-1.0)'
+        '--p_driv', type=float, default=0.004,
+        help='Fraction of time in directed motion (0.0-1.0); 0.004 matches the paper'
     )
     sim_group.add_argument(
         '--trap_dist', type=str, default="default",
