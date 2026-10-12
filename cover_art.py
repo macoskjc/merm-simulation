@@ -23,7 +23,10 @@ RNPs started 7.5 um out reach the membrane within 20 min, with ~5.8 directed run
 Outputs (all 8.5 x 11 in, 300 dpi, pixel-aligned so they stack):
     cover_mockup.png / .pdf      full composition with page colour, labels and a
                                  masthead placeholder, for review
-    cover_foreground.png         transparent background, no labels: to lay over a photo
+    cover_foreground.png         transparent background, no labels; the cell is an
+                                 opaque off-white disk
+    cover_foreground_no_cell.png the same without the cell disk, spokes and nucleus,
+                                 so a background photo shows through everywhere
     layers/*.png                 the same foreground split into transparent layers
 
 Reproducibility notes (simulation.py is not modified):
@@ -251,6 +254,8 @@ def save(fig, layer, outdir):
     fg = set(LAYERS) - {"labels"}
     only(fg)
     fig.savefig(outdir / "cover_foreground.png", dpi=DPI, transparent=True)
+    only(fg - {"cell"})
+    fig.savefig(outdir / "cover_foreground_no_cell.png", dpi=DPI, transparent=True)
     for name in LAYERS:
         only({name})
         fig.savefig(outdir / "layers" / f"{name}.png", dpi=DPI, transparent=True)
