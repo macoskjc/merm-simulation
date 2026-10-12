@@ -4,8 +4,9 @@ Cover-art foreground for the MERM Perspective (layout after Ludovic Autin's mock
 Middle: RNPs from simulation.py (Song Kim's model, unmodified) followed for 20 min,
         with directed runs highlighted, plus a GFP-sized protein diffusing freely for
         1 s (same protein and Stokes-Einstein settings as goodsell.py's Figure 1).
-Lower left: goodsell.py's bacterium (Ludovic Autin), seed 29, complete paths to first
-        contact (~1 s), drawn at the same scale as the eukaryotic cell and at x5.
+Lower left: goodsell.py's bacterium (Ludovic Autin), seed 29: Figure 1's 5, 10 and 15 ms
+        panels, magnified x4, and the 15 ms panel at the same scale as the eukaryotic cell.
+All text and the scale bar are white, for laying over a photo.
 
 Everything is seeded, so the same command redraws the same picture:
 
@@ -21,12 +22,13 @@ RNPs started 7.5 um out reach the membrane within 20 min, with ~5.8 directed run
 (64-RNP ensemble). Of seeds 1-24, seed 17 is closest to both: 5 of 8 exit, 5.9 runs/RNP.
 
 Outputs (all 8.5 x 11 in, 300 dpi, pixel-aligned so they stack):
-    cover_mockup.png / .pdf      full composition with page colour, labels and a
-                                 masthead placeholder, for review
-    cover_foreground.png         transparent background, no labels; the cell is an
+    cover_mockup.png / .pdf      full composition with labels and a masthead placeholder
+                                 on a dark page standing in for the background photo
+    cover_foreground.png         transparent background, with labels; the cell is an
                                  opaque off-white disk
     cover_foreground_no_cell.png the same without the cell disk, spokes and nucleus,
                                  so a background photo shows through everywhere
+                                 (layers/ has every part separately, e.g. to drop labels)
     layers/*.png                 the same foreground split into transparent layers
 
 Reproducibility notes (simulation.py is not modified):
@@ -53,7 +55,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib import patheffects
 from matplotlib.collections import LineCollection
 from matplotlib.patches import Circle, Polygon, Rectangle
 from numba import njit
@@ -62,14 +63,15 @@ PAGE_IN = (8.5, 11.0)            # US letter, portrait
 DPI = 300
 UM_PER_IN = 15.02 / (0.396 * 8.5)  # cell radius = 39.6% of page width, as in the mock-up
 
-PAGE = "#E6E6E8"
+PAGE = "#2B2E35"                 # review mock-up only: a dark stand-in for the photo
 CYTOPLASM = "#FAFAFA"
 NUCLEUS = "#DCD8E6"
 SPOKE = "#D2E6DA"
 RNP = "#3A9E7A"
 DIRECTED = "#EBA024"
 PROTEIN = "#2A36B8"
-TEXT = "#000000"
+TEXT = "#FFFFFF"
+CONNECTOR = "#B8BCC4"
 
 LAYERS = ("cell", "rnp_paths", "directed_runs", "protein", "bacterium", "scalebar", "labels")
 
@@ -150,14 +152,13 @@ def draw(sim, g, tracks, protein, bact, args):
         return artist
 
     fs = um_to_pt(0.70)                                        # label font size
-    halo = [patheffects.withStroke(linewidth=um_to_pt(0.12), foreground=CYTOPLASM)]
 
     # page + masthead placeholder (review mock-up only)
     add("page", ax.add_patch(Rectangle((0, 0), W, H, fc=PAGE, lw=0, zorder=0)))
     add("page", ax.add_patch(Rectangle((0.003 * W, H - 0.185 * H), 0.994 * W, 0.18 * H,
-                                       fc="none", ec="#B4B4B8", lw=0.6, ls=(0, (3, 3)), zorder=0)))
+                                       fc="none", ec="#6C7078", lw=0.6, ls=(0, (3, 3)), zorder=0)))
     add("page", ax.text(W / 2, H - 0.095 * H, "[ journal masthead ]", ha="center", va="center",
-                        fontsize=1.4 * fs, color="#A0A0A4"))
+                        fontsize=1.4 * fs, color="#8A8E96"))
 
     # cell, radial spokes (microtubule cue), nucleus
     cell = add("cell", ax.add_patch(Circle(c, R_cell, fc=CYTOPLASM, lw=0, zorder=1)))
@@ -192,27 +193,41 @@ def draw(sim, g, tracks, protein, bact, args):
         capstyle="round", joinstyle="round")))
     lc.set_clip_path(cell)
 
-    # bacterium from goodsell.py, at the same scale and at x5
+    # bacterium from goodsell.py: Figure 1's 5, 10 and 15 ms panels, magnified, plus the
+    # 15 ms panel at the same scale as the eukaryotic cell
     gcfg, P, S, t = bact
     a = gcfg.display_pixel_nm * 1e-3                            # um per goodsell display pixel
     Pxy, Pt = g.display_path(P, t, a)
     Sxy, St = g.display_path(S, t, a)
-    brun = g.oldest_first(((Sxy, St, rc.sugar_color), (Pxy, Pt, rc.protein_color)),
-                          float(t[-1]), rc, np.zeros(2))
     Rb, hb = gcfg.cell_diameter_um / 2, (gcfg.cell_length_um - gcfg.cell_diameter_um) / 2
-    small_c = np.array([0.260 * W, 0.061 * H])
-    big_c = np.array([0.113 * W, 0.141 * H])
-    for centre, mag in ((small_c, 1.0), (big_c, 5.0)):
-        body = add("bacterium", ax.add_patch(Polygon(
-            g.capsule_xy(centre[0], centre[1], Rb * mag, hb * mag), closed=True,
-            fc=CYTOPLASM, lw=0, zorder=2)))
+    mag = args.bacterium_mag
+    gap = 0.15 * 2 * Rb * mag
+    y_bot = 1.8
+    centres = [np.array([1.0 + Rb * mag + i * (2 * Rb * mag + gap), y_bot + (Rb + hb) * mag])
+               for i in range(len(g.PANEL_TIMES_S))]
+    small_c = np.array([centres[-1][0] + Rb * mag + 2.4, y_bot + Rb + hb])
+
+    def bacterium(centre, scale, t_now):
+        outline = g.capsule_xy(centre[0], centre[1], Rb * scale, hb * scale)
+        clearance = np.hypot(*(outline - c).T).min() - R_cell
+        if clearance < 0.2:
+            raise SystemExit(f"bacterium panel at x = {centre[0]:.1f} um overlaps the cell; "
+                             "use a smaller --bacterium-mag")
+        body = add("bacterium", ax.add_patch(Polygon(outline, closed=True, fc=CYTOPLASM,
+                                                     lw=0, zorder=2)))
+        runs = (g.tinted_runs(Sxy, St, t_now, g.FADE_T_S, rc.sugar_color, rc, np.zeros(2))
+                + g.tinted_runs(Pxy, Pt, t_now, g.FADE_T_S, rc.protein_color, rc, np.zeros(2)))
         lc = add("bacterium", ax.add_collection(LineCollection(
-            [r[0] * a * mag + centre for r in brun], colors=[r[1] for r in brun],
-            linewidths=um_to_pt(rc.stroke_px * a * mag), zorder=3,
+            [r[0] * a * scale + centre for r in runs], colors=[r[1] for r in runs],
+            linewidths=um_to_pt(rc.stroke_px * a * scale), zorder=3,
             capstyle="projecting", joinstyle="miter")))
         lc.set_clip_path(body)
-    add("bacterium", ax.plot([small_c[0] - 0.6 * Rb, big_c[0] + 1.03 * 5 * Rb],
-                             [small_c[1] + 0.3, big_c[1] - 0.6], color="#8C8C90",
+
+    for centre, t_now in zip(centres, g.PANEL_TIMES_S):
+        bacterium(centre, mag, t_now)
+    bacterium(small_c, 1.0, g.PANEL_TIMES_S[-1])
+    add("bacterium", ax.plot([centres[-1][0] + 1.06 * Rb * mag, small_c[0] - 1.6 * Rb],
+                             [small_c[1], small_c[1]], color=CONNECTOR,
                              lw=um_to_pt(0.03), zorder=1.8)[0])
 
     # scale bar
@@ -222,19 +237,24 @@ def draw(sim, g, tracks, protein, bact, args):
     add("scalebar", ax.text(x0 + 2.5, yb + 0.35, "5 µm", ha="center", va="bottom",
                             fontsize=fs, color=TEXT))
 
-    # labels
-    lab = lambda *p, **k: add("labels", ax.text(*p, fontsize=fs, zorder=6, **k))
-    lab(*c, "nucleus", ha="center", va="center", color=TEXT)
-    lab(c[0] + 0.89 * R_cell, c[1] + 0.95 * R_cell, f"RNPs, {args.rnp_minutes:g} min",
-        ha="right", va="bottom", color=RNP)
-    lab(c[0] + 0.89 * R_cell, c[1] + 0.95 * R_cell, "directed runs",
-        ha="right", va="top", color=DIRECTED)
+    # labels (all white; the legend keeps its colour key as short line swatches)
+    lab = lambda *p, **k: add("labels", ax.text(*p, fontsize=fs, zorder=6, color=TEXT, **k))
+    add("cell", ax.text(*c, "nucleus", ha="center", va="center", fontsize=fs, color=TEXT,
+                        zorder=6))                           # only shown with the cell
+    x_leg, y_leg = c[0] + 0.43 * R_cell, c[1] + 0.98 * R_cell
+    for dy, colour, lw, text in ((0.0, RNP, args.rnp_width_um * 4, f"RNPs, {args.rnp_minutes:g} min"),
+                                 (-1.05, DIRECTED, args.directed_width_um, "directed runs")):
+        add("labels", ax.plot([x_leg - 1.5, x_leg - 0.4], [y_leg + dy, y_leg + dy], color=colour,
+                              lw=um_to_pt(lw), solid_capstyle="round", zorder=6)[0])
+        lab(x_leg, y_leg + dy, text, ha="left", va="center")
     end = pxy[np.argmin(pxy[:, 1])] + c
-    lab(end[0], end[1] - 0.6, f"protein, {args.protein_seconds:g} s", ha="center", va="top",
-        color=TEXT, path_effects=halo)
-    lab(big_c[0], big_c[1] + 5 * (Rb + hb) + 0.5, f"×5, {t[-1]:.0f} s", ha="center",
-        va="bottom", color=TEXT)
-    lab(small_c[0] + 1.2, small_c[1], "bacterium, same scale", ha="left", va="center", color=TEXT)
+    lab(end[0], end[1] - 0.6, f"protein, {args.protein_seconds:g} s", ha="center", va="top")
+    for centre, t_now in zip(centres, g.PANEL_TIMES_S):
+        lab(centre[0], y_bot - 0.3, g.label(t_now), ha="center", va="top")
+    lab(centres[0][0], centres[0][1] + (Rb + hb) * mag + 0.35, f"×{mag:g}", ha="center",
+        va="bottom")
+    lab(small_c[0] + 1.0, small_c[1], f"bacterium, {g.label(g.PANEL_TIMES_S[-1])}, same scale",
+        ha="left", va="center")
     return fig, layer
 
 
@@ -251,7 +271,7 @@ def save(fig, layer, outdir):
     for ext in ("png", "pdf"):
         fig.savefig(outdir / f"cover_mockup.{ext}", dpi=DPI,
                     metadata={"Date": None} if ext == "pdf" else None)
-    fg = set(LAYERS) - {"labels"}
+    fg = set(LAYERS)
     only(fg)
     fig.savefig(outdir / "cover_foreground.png", dpi=DPI, transparent=True)
     only(fg - {"cell"})
@@ -277,6 +297,8 @@ def main():
                     metavar=("X_UM", "Y_UM"), help="relative to the cell centre")
     ap.add_argument("--bacterium-seed", type=int, default=None,
                     help="goodsell.py seed (default: goodsell.SEED = 29, as in Figure 1)")
+    ap.add_argument("--bacterium-mag", type=float, default=4.0,
+                    help="magnification of the three bacterium panels (5 overlaps the cell)")
     ap.add_argument("--spokes", type=int, default=40)
     ap.add_argument("--rnp-sample-ms", type=float, default=10.0)
     ap.add_argument("--rnp-width-um", type=float, default=0.035)
