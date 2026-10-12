@@ -13,7 +13,7 @@ Everything is seeded, so the same command redraws the same picture:
     python cover_art.py --seed 3         # a different (but again reproducible) draw
 
 Directed motion uses the paper's p_driv = 0.004 (0.4% of the time; see sim-paper.pdf,
-Appendix), not run.py's default of 0.03. With 0.004 the simulation reproduces the
+Appendix; also run.py's default). With 0.004 the simulation reproduces the
 Perspective's 16.4% directed / 83.6% motor-enhanced split.
 
 Seed choice (illustration only, like goodsell.py's seed 29): at p_driv = 0.004, 59% of
