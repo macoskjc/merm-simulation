@@ -113,6 +113,8 @@ def main():
     ap.add_argument("--rnp-width-um", type=float, default=0.02)
     ap.add_argument("--rnp-alpha", type=float, default=0.85)
     ap.add_argument("--rnp-color", default="#FFFFFF")
+    ap.add_argument("--capsule-color", default="#1E222A", help="bacterium fill")
+    ap.add_argument("--capsule-edge", default="#5C6370", help="bacterium outline")
     ap.add_argument("--protein-color", default="#D44DFF",
                     help="protein path, in the cell and the bacterium panels (purple)")
     ap.add_argument("--rotation-deg", type=float, default=0.0)
@@ -262,7 +264,8 @@ def main():
     # bacterium (goodsell.py's Figure 1 run): the 5, 10 and 15 ms panels magnified, and the
     # 15 ms panel at the photo's scale, in whichever black corner holds them largest
     P, S, t = g.simulate(gcfg, g.SEED)
-    rc = replace(g.RenderConfig(), protein_color=args.protein_color)
+    # dark capsules so the cell stays the focus; paths fade into the capsule colour
+    rc = replace(g.RenderConfig(), protein_color=args.protein_color, cytoplasm=args.capsule_color)
     a_um = gcfg.display_pixel_nm * 1e-3
     Pxy, Pt = g.display_path(P, t, a_um)
     Sxy, St = g.display_path(S, t, a_um)
@@ -296,7 +299,8 @@ def main():
 
     def bacterium(cx, cy, px_per_um, t_now):
         outline = g.capsule_xy(cx, cy, Rb * px_per_um, hb * px_per_um)
-        body = ax.add_patch(Polygon(outline, closed=True, fc=rc.cytoplasm, lw=0, zorder=2))
+        body = ax.add_patch(Polygon(outline, closed=True, fc=rc.cytoplasm, ec=args.capsule_edge,
+                                    lw=0.0015 * W * pt_per_px, zorder=2))
         runs = (g.tinted_runs(Sxy, St, t_now, g.FADE_T_S, rc.sugar_color, rc, np.zeros(2))
                 + g.tinted_runs(Pxy, Pt, t_now, g.FADE_T_S, rc.protein_color, rc, np.zeros(2)))
         k = a_um * px_per_um
