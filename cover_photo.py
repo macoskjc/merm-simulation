@@ -204,8 +204,10 @@ def simulated_cell(cell, ellipse, centre, s, k, window, size, args):
         1 - exp(-distance from the edge / --edge-falloff-um), and RNPs are scattered in
         proportion to it (fewer where the cell is thin);
       * RNPs: specks at random positions, each a Gaussian of s.d. --psf-um (60x, NA 0.7);
-      * nucleus: the model's ellipse as a dome (thickest in the middle), with a fine random
-        texture and two or three dimmer patches the size of nucleoli;
+      * nucleus: the model's ellipse with the thickness of an ellipsoid (so its rim is faint),
+        a fine random texture and two or three dimmer patches the size of nucleoli; the
+        cytoplasm above and below it still fluoresces, thinner where the nucleus is thicker
+        (--nucleus-displaces), so green, and RNP specks, show through it;
       * the diffuse green and the nucleus are then blurred by --defocus-um, as by
         out-of-focus light."""
     PW, PH = size
@@ -224,8 +226,8 @@ def simulated_cell(cell, ellipse, centre, s, k, window, size, args):
     a, b, phi = ellipse
     u, v = x * np.cos(phi) + y * np.sin(phi), -x * np.sin(phi) + y * np.cos(phi)
     rho2 = (u / a) ** 2 + (v / b) ** 2
-    nuc_mask = rho2 <= 1
-    cyto = thick * ~nuc_mask
+    dome = np.sqrt(np.clip(1 - rho2, 0, 1))                # nuclear thickness, 1 at the centre
+    cyto = thick * (1 - args.nucleus_displaces * dome)     # cytoplasm above and below it
 
     def smooth_noise(scale_um):
         n = max(4, int(PW / (scale_um * um)))
@@ -234,26 +236,33 @@ def simulated_cell(cell, ellipse, centre, s, k, window, size, args):
         return z / z.std()
 
     # nucleus: dome profile, fine texture, a few dimmer nucleolus-sized patches
-    nucleus = np.sqrt(np.clip(1 - rho2, 0, 1)) ** 0.5 * (1 + 0.10 * smooth_noise(0.4)
-                                                         + 0.08 * smooth_noise(1.5))
+    nucleus = dome * (1 + 0.10 * smooth_noise(0.4) + 0.08 * smooth_noise(1.5))
     for _ in range(rng.integers(2, 4)):
         r, t, w = rng.uniform(0, 0.55), rng.uniform(0, 2 * np.pi), rng.uniform(0.6, 0.9)
         nucleus *= 1 - 0.35 * np.exp(-((u - r * a * np.cos(t)) ** 2 + (v - r * b * np.sin(t)) ** 2)
                                      / (2 * w ** 2))
     blur = args.defocus_um * um
-    blue = ndi.gaussian_filter(0.6 * nucleus * nuc_mask, blur)
-    diffuse = ndi.gaussian_filter(0.20 * cyto * (1 + 0.25 * smooth_noise(2.0)), blur)
+    blue = ndi.gaussian_filter(args.nucleus_brightness * nucleus, blur)
+    diffuse = ndi.gaussian_filter(0.26 * cyto * (1 + 0.25 * smooth_noise(2.0)), blur)
 
     # RNP specks, scattered in proportion to the local thickness of the cytoplasm
-    area_um2 = (inside & ~nuc_mask).sum() / um ** 2
+    area_um2 = cyto.sum() / um ** 2                        # thickness-weighted area
     n = int(args.puncta_per_um2 * area_um2)
     weights = cyto.ravel() / cyto.sum()
     idx = rng.choice(PH * PW, size=n, replace=False, p=weights)
-    spots = np.zeros(PH * PW)
-    np.add.at(spots, idx, rng.lognormal(0.0, 0.45, n))
+    # specks over the nucleus lie above or below it, out of the focal plane: spread wider
+    # (and so dimmer at the peak, same total light) in proportion to the nucleus's thickness
+    bright = rng.lognormal(0.0, 0.45, n)
+    depth = dome.ravel()[idx]
     sigma = args.psf_um * um
-    spots = ndi.gaussian_filter(spots.reshape(PH, PW), sigma) * 2 * np.pi * sigma ** 2
-    green = diffuse + args.puncta_brightness * spots
+    green = diffuse
+    for lo, hi in ((0.0, 0.25), (0.25, 0.6), (0.6, 1.01)):
+        sel = (depth >= lo) & (depth < hi)
+        layer_ = np.zeros(PH * PW)
+        np.add.at(layer_, idx[sel], bright[sel])
+        sig = np.hypot(sigma, (lo + hi) / 2 * args.defocus_um * 2 * um)
+        green = green + args.puncta_brightness * ndi.gaussian_filter(
+            layer_.reshape(PH, PW), sig) * 2 * np.pi * sigma ** 2
     rgb = green[..., None] * np.array([0.15, 1.0, 0.25]) + blue[..., None] * np.array([0.12, 0.25, 1.0])
     print(f"simulated cell: {n} RNP specks over {area_um2:.0f} um^2 of cytoplasm")
     return Image.fromarray((np.clip(rgb, 0, 1) * 255).round().astype(np.uint8))
@@ -315,6 +324,11 @@ def main():
                     help="simulated background: peak brightness of a typical RNP speck (0-1)")
     ap.add_argument("--puncta-per-um2", type=float, default=1.0,
                     help="simulated background: RNP specks per um^2 of cytoplasm")
+    ap.add_argument("--nucleus-brightness", type=float, default=0.42,
+                    help="simulated background: blue at the nucleus's thickest point (0-1)")
+    ap.add_argument("--nucleus-displaces", type=float, default=0.7,
+                    help="simulated background: fraction of the cytoplasm's thickness the nucleus "
+                         "takes up at its centre (the rest still fluoresces above and below it)")
     ap.add_argument("--edge-falloff-um", type=float, default=1.5,
                     help="simulated background: how far in from the edge the cell reaches full thickness")
     ap.add_argument("--defocus-um", type=float, default=0.35,
