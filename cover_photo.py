@@ -67,14 +67,16 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib import patheffects
 from matplotlib.collections import LineCollection
+from matplotlib.colors import to_rgb
 from matplotlib.patches import Polygon
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from numba import njit
 from scipy import ndimage as ndi
 from scipy.spatial import cKDTree
 
-from cover_art import DIRECTED, TEXT, runs_by_state, seed_numba, simulate_protein
+from cover_art import DIRECTED, TEXT, seed_numba, simulate_protein
 
 UPSCALE = 3              # overlay pixels per photo pixel
 DPI = 300
@@ -337,6 +339,13 @@ def main():
                     help="simulated background: Gaussian s.d. of each speck (60x, NA 0.7)")
     ap.add_argument("--protein-sample-ms", type=float, default=1.0,
                     help="draw the protein's path every this many ms")
+    ap.add_argument("--variant", choices=("plain", "fade", "numbered"), default="plain",
+                    help="cover variant: fade = older parts of each path more transparent, so its "
+                         "direction shows; numbered = RNPs labelled 1-8 (written alongside plain)")
+    ap.add_argument("--fade-min", type=float, default=0.08,
+                    help="fade variant: opacity of the oldest lines, relative to the newest")
+    ap.add_argument("--fade-tau", type=float, default=0.4,
+                    help="fade variant: how quickly lines fade with age (fraction of the run)")
     ap.add_argument("--outdir", type=Path, default=Path("cover_output"))
     args = ap.parse_args()
 
@@ -471,18 +480,49 @@ def main():
     # of the lines with the RNP settled in a trap only a random --trap-fraction is, so each trap
     # shows as a "snowflake" of jumps around its centre instead of a solid blob.
     rng = np.random.default_rng(args.seed)
-    rnp_diff, rnp_dir = [], []
+    rnp_diff, rnp_dir, diff_t, dir_t, labels_at = [], [], [], [], []
     for c in chosen:
         p = to_px(c["xy"].astype(float), centre, s)
         st = c["state"].astype(bool)
-        rnp_dir += runs_by_state(p[:, 0], p[:, 1], st, 1)[1]
         seg = np.stack([p[:-1], p[1:]], axis=1)
+        t = np.arange(len(seg)) / max(len(seg) - 1, 1)     # 0 at the start of the run, 1 at the end
         hop = np.zeros(len(seg), bool)
         hop[c["hops"]] = True
         join = st[:-1] != st[1:]
         keep = ~(st[:-1] & st[1:]) & (hop | join | (rng.random(len(seg)) < args.trap_fraction))
         rnp_diff.append(seg[keep])
-    rnp_diff = np.concatenate(rnp_diff)
+        diff_t.append(t[keep])
+        rnp_dir.append(seg[st[:-1]])                       # a line takes the state it starts in
+        dir_t.append(t[st[:-1]])
+        labels_at.append(c["xy"].astype(float))
+    rnp_diff, rnp_dir = np.concatenate(rnp_diff), np.concatenate(rnp_dir)
+    diff_t, dir_t = np.concatenate(diff_t), np.concatenate(dir_t)
+    # numbered 1-8 clockwise, starting from the RNP nearest the top (by each path's centre of mass)
+    labels_at.sort(key=lambda xy: (np.pi / 2 - np.arctan2(xy[:, 1].mean(), xy[:, 0].mean())) % (2 * np.pi))
+    top = int(np.argmin([abs((np.arctan2(xy[:, 1].mean(), xy[:, 0].mean()) - np.pi / 2 + np.pi)
+                             % (2 * np.pi) - np.pi) for xy in labels_at]))
+    labels_at = labels_at[top:] + labels_at[:top]
+    all_paths = cKDTree(np.concatenate(labels_at))
+
+    def label_spot(xy, y_min_px):
+        """Nearest clear spot to a path's centre of mass, marching outward (or inward if that
+        would enter the masthead band), at least 0.9 um from every RNP path."""
+        c = xy.mean(0)
+        u = c / np.hypot(*c)
+        for sign in (1, -1):
+            for d in np.arange(0, 12, 0.1):
+                q = c + sign * d * u
+                if all_paths.query(q)[0] >= 0.9 and to_px(q[None], centre, s)[0, 1] > y_min_px:
+                    return to_px(q[None], centre, s)[0]
+        return to_px(c[None], centre, s)[0]
+
+    def colours(colour, t, alpha):
+        """One RGBA per line; with --variant fade, older lines are more transparent (as in
+        goodsell.py's panels: fade_min + (1 - fade_min) * exp(-age / fade_tau))."""
+        a = np.full(len(t), alpha)
+        if args.variant == "fade":
+            a = a * (args.fade_min + (1 - args.fade_min) * np.exp(-(1 - t) / args.fade_tau))
+        return np.c_[np.tile(to_rgb(colour), (len(t), 1)), a]
     prot_px = None
     if prot:
         pxy, pt = simulate_protein(gcfg.D_protein, args.protein_seconds, np.array(prot["start_um"]),
@@ -491,6 +531,7 @@ def main():
         idx = np.unique(np.r_[np.searchsorted(pt, np.arange(0, pt[-1], args.protein_sample_ms * 1e-3)),
                               len(pt) - 1])
         prot_px = to_px(pxy[idx], centre, s)
+        prot_t = pt[idx] / pt[-1]
 
     # bacterium (goodsell.py's Figure 1 run): the 5, 10 and 15 ms panels magnified, and the
     # 15 ms panel at the photo's scale, in whichever black corner holds them largest. Dark
@@ -548,17 +589,26 @@ def main():
             ax.text(*a, fontsize=fs, color=TEXT, zorder=6, **kw)
 
         if "paths" in groups:
-            ax.add_collection(LineCollection(rnp_diff, colors=args.rnp_color,
+            ax.add_collection(LineCollection(rnp_diff, colors=colours(args.rnp_color, diff_t,
+                                                                      rnp_alpha or args.rnp_alpha),
                                              linewidths=args.rnp_width_um * pt_per_um,
-                                             alpha=rnp_alpha or args.rnp_alpha, capstyle="round",
-                                             joinstyle="round", zorder=2))
-            ax.add_collection(LineCollection(rnp_dir, colors=DIRECTED,
+                                             capstyle="round", joinstyle="round", zorder=2))
+            ax.add_collection(LineCollection(rnp_dir, colors=colours(DIRECTED, dir_t, 1.0),
                                              linewidths=args.directed_width_um * pt_per_um,
                                              capstyle="round", zorder=3))
             if prot_px is not None:
-                ax.add_collection(LineCollection([prot_px], colors=args.protein_color,
+                pseg = np.stack([prot_px[:-1], prot_px[1:]], axis=1)
+                ax.add_collection(LineCollection(pseg, colors=colours(args.protein_color, prot_t[1:], 1.0),
                                                  linewidths=0.03 * pt_per_um, capstyle="round",
                                                  joinstyle="round", zorder=3.5))
+        if "numbers" in groups:
+            y_min = Y0 + args.masthead_frac * (Y1 - Y0) + 1.5 * s       # below the masthead band
+            for i, xy in enumerate(labels_at, 1):
+                lx, ly = label_spot(xy, y_min)
+                ax.text(lx, ly, str(i), ha="center", va="center", color=TEXT, zorder=7,
+                        fontsize=1.8 * pt_per_um, fontweight="bold",
+                        path_effects=[patheffects.withStroke(linewidth=0.35 * pt_per_um,
+                                                             foreground="black")])
 
         def bacterium(cx, cy, px_per_um, t_now):
             outline = g.capsule_xy(cx, cy, Rb * px_per_um, hb * px_per_um)
@@ -632,7 +682,7 @@ def main():
     Lc = bacteria_layout(window, False, ("bottom-right", "bottom-left")) if args.bacteria else None
     tmp_paths, tmp_bact = args.outdir / "_cover_paths.png", args.outdir / "_cover_bacteria.png"
     render(window, k, {"paths"}, tmp_paths, None, rnp_alpha=args.cover_rnp_alpha)
-    render(window, k, {"bacteria"}, tmp_bact, Lc)
+    render(window, k, {"bacteria"} | ({"numbers"} if args.variant == "numbered" else set()), tmp_bact, Lc)
 
     def photo_page(k):
         # photo: back to the source figure's own resolution, then smoothly up to the cover's
@@ -656,7 +706,7 @@ def main():
                               (PW, PH), args)
     else:
         page = photo_page(k)
-    name = f"cover_{args.background}_final"
+    name = f"cover_{args.background}_final" + ("" if args.variant == "plain" else f"_{args.variant}")
 
     def layer(path):
         a = np.asarray(Image.open(path).convert("RGBA")).astype(float) / 255
