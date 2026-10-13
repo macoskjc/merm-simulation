@@ -171,9 +171,14 @@ def simulate_slot(job):
         hug = len(np.unique(np.floor(np.degrees(th[near]))))
         score = (hug // 5, travel) if job["prefer"] == "hug" else (0, travel)
         if best is None or score > best["score"]:
-            # 10-ms segments during which the RNP hopped to a new trap (hop_t[0] is the first trap)
-            hops = np.unique(np.clip(np.ceil(o.hop_t[1:] / (every * cfg.dt)).astype(int) - 1,
-                                     0, len(xy) - 2))
+            # 10-ms lines that are part of a hop to a new trap: from the moment the trap centre
+            # jumps (simulation.py's hop times; hop_t[0] is the first trap) until the RNP has
+            # settled into the new trap, 3 relaxation times (drag / stiffness) later
+            step, settle = every * cfg.dt, 3 * sim.g / sim.k
+            hops = np.unique(np.concatenate(
+                [np.arange(int(t // step), int((t + settle) // step) + 1) for t in o.hop_t[1:]]
+                or [np.zeros(0, int)]))
+            hops = hops[hops < len(xy) - 1]
             best = {"seed": seed, "travel": float(travel), "hug_deg": hug, "score": score,
                     "xy": xy, "state": o.state_dt[::every].astype(bool), "hops": hops}
     return job["slot"], n_fit, best, sim.k
@@ -195,7 +200,8 @@ def main():
                     help="how far an RNP may wander sideways, as a fraction of half the slot spacing")
     ap.add_argument("--rnp-width-um", type=float, default=0.02)
     ap.add_argument("--trap-fraction", type=float, default=0.10,
-                    help="fraction of the within-trap lines drawn (hops and directed runs always are)")
+                    help="fraction of the lines within a trap drawn (hops, including the RNP "
+                         "settling into its new trap, and directed runs always are)")
     ap.add_argument("--rnp-alpha", type=float, default=0.85)
     ap.add_argument("--rnp-color", default="#FFFFFF")
     ap.add_argument("--capsule-color", default="#1E222A", help="bacterium fill")
@@ -259,7 +265,7 @@ def main():
     key = hashlib.sha1(args.photo.read_bytes() + json.dumps(
         [args.seed, args.tries, args.rnp_minutes, args.p_driv, args.n_rnps, args.rotation_deg,
          args.wedge, s, args.green_threshold, args.edge_margin_px, args.geometry,
-         args.ellipse_scale, args.prefer, "hops"]).encode()).hexdigest()[:12]
+         args.ellipse_scale, args.prefer, "hops+settle"]).encode()).hexdigest()[:12]
     cache = args.outdir / f"rnp_paths_{key}.npz"
     results = {}
     if cache.exists():
@@ -340,9 +346,10 @@ def main():
     H, W = ok.shape
     plt.rcParams.update({"font.family": "sans-serif",
                          "font.sans-serif": ["Helvetica Neue", "Helvetica", "Arial", "DejaVu Sans"]})
-    # RNP lines, one per 10-ms step. Hops between traps, directed runs and the joins between
-    # them are all drawn; of the lines within a trap only a random --trap-fraction is, so each
-    # trap shows as a "snowflake" of jumps around its centre instead of a solid blob.
+    # RNP lines, one per 10-ms step. Hops between traps (from the trap centre's jump until the
+    # RNP has settled in the new trap), directed runs and the joins between them are all drawn;
+    # of the lines with the RNP settled in a trap only a random --trap-fraction is, so each trap
+    # shows as a "snowflake" of jumps around its centre instead of a solid blob.
     rng = np.random.default_rng(args.seed)
     rnp_diff, rnp_dir = [], []
     for c in chosen:
