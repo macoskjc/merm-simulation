@@ -1,34 +1,41 @@
 """
 Fit the cover-art RNP simulation into a micrograph of a real cell.
 
-The cell photo (nucleus in blue, cytoplasm in green) is segmented, the model's circular
-nucleus is centred on the photo's nucleus, and each RNP slot is filled with a simulated
-path that stays inside the green cytoplasm.
+The cell photo (nucleus in blue, cytoplasm in green) is segmented, the model's nucleus is
+shaped and placed to match the photo's, and each RNP slot is filled with a simulated path
+that stays inside the green cytoplasm.
 
     python cover_photo.py --photo cover_output/cell_photo.png --px-per-um 26.2
 
 26.2 px/um is the cover photo's scale: it is the middle cell of Fig. 1F in Moran et al.
 2022 (J Virol, doi:10.1128/jvi.00934-22; A549 cells, VSV-PeGFP green, DAPI blue), and the
-crop is 11.2x the figure, whose 25 um bar is 58.4 px (2.34 px/um). With --geometry photo
-(default) the model's nucleus is resized to cover this cell's (8.5 um) and RNPs start
-2.5 um outside it, as in the model (5 -> 7.5 um); the RNP dynamics are unchanged.
+crop is 11.2x the figure, whose 25 um bar is 58.4 px (2.34 px/um).
+
+Geometry (--geometry; the RNP dynamics are simulation.py's, unchanged, in every case):
+  ellipse (default)  the model's nucleus is an ellipse fitted to the photo's (by moments,
+                     enlarged 6% to cover its blurred edge), so RNPs that reach it slide
+                     along the real nucleus outline; each RNP starts 2.5 um outside it in
+                     its own direction, as in the model (5 um nucleus -> start at 7.5 um).
+                     Done by swapping simulation.py's outside_nucleus() before it compiles.
+  photo              a circle just covering the photo's nucleus, start 2.5 um outside it
+  model              simulation.py's own 5 um nucleus and 15 um cell
 
 How the paths are chosen (illustration only):
-  * The model is rotationally symmetric (circular cell and nucleus, radial directed runs,
-    isotropic trap hops), so a path simulated from angle 0 can be rotated to start at any
-    angle. A pool of paths is simulated once (seeded) and rotated into each slot.
+  * Each slot (start angle) is simulated --tries times (seeded), in its own process so
+    simulation.py compiles with that slot's start position; slots run in parallel.
   * Most 20-min paths leave a cell this size, so only paths that stay inside the photo's
     cytoplasm, and within their own wedge around the nucleus (so clusters do not overlap),
-    are kept; of those, each slot gets the one that travels farthest. The script prints
-    what fraction of the pool fitted each slot. A small summary of the pool is cached
-    in --outdir, so redrawing with the same settings skips the simulation.
+    are kept; of those, each slot gets the one that runs along the most of the nucleus wall
+    (--prefer hug; ties go to the one that travels farthest). The script prints
+    what fraction fitted each slot. The chosen paths are cached in --outdir, so redrawing
+    with the same settings skips the simulation.
   * Because the RNPs do not interact, this is equivalent to resimulating whole 8-RNP
     draws until all eight fit, only much faster.
 
 Outputs (in --outdir):
     photo_overlay.png    transparent, 3x the photo's pixel size: RNP paths (white) with
-                         directed runs (orange), the protein (purple), the bacterium panels
-                         in a black corner, legend and scale bar
+                         directed runs (orange), the protein (purple), legend and scale bar
+                         (and, with --bacteria, goodsell.py's panels in a black corner)
     photo_overlay_nolabels.png   the same without any text, legend or scale bar
     cover_photo_final.png        the cover: 8.5 x 11 in at 300 dpi, full-bleed black, no text,
                                  the cell as large as fits below a masthead band (top 26%),
@@ -36,7 +43,7 @@ Outputs (in --outdir):
                                  from neighbouring cells and lifted, and the paths glowing
     cover_photo_final_preview.png  the same with the masthead area outlined
     photo_preview.png    the photo with the overlay on top
-    photo_choice.json    scale, seeds and pool indices, so the choice can be reproduced
+    photo_choice.json    scale, geometry and seeds, so the choice can be reproduced
 """
 
 import os
@@ -48,7 +55,9 @@ import argparse
 import importlib
 import hashlib
 import json
+import multiprocessing
 import random
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
@@ -60,6 +69,7 @@ import numpy as np
 from matplotlib.collections import LineCollection
 from matplotlib.patches import Polygon
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from numba import njit
 from scipy import ndimage as ndi
 
 from cover_art import DIRECTED, TEXT, runs_by_state, seed_numba, simulate_protein
@@ -85,7 +95,7 @@ def masks(photo, green_thr, smooth_px, edge_margin_px, nucleus_margin_px):
     reach = np.hypot(xs - centre[0], ys - centre[1]).max()
     ok = (ndi.binary_erosion(cell, iterations=edge_margin_px)
           & ~ndi.binary_dilation(nuc, iterations=nucleus_margin_px))
-    return im.astype(np.uint8), cell, ok, centre, reach
+    return im.astype(np.uint8), cell, nuc, ok, centre, reach
 
 
 def to_px(xy_um, centre, s):
@@ -99,9 +109,71 @@ def fits(xy_um, ok, centre, s):
     return bool(inside.all() and ok[p[:, 1], p[:, 0]].all())
 
 
-def rotate(xy, a):
-    c, s = np.cos(a), np.sin(a)
-    return np.c_[c * xy[:, 0] - s * xy[:, 1], s * xy[:, 0] + c * xy[:, 1]]
+def nucleus_ellipse(nuc, s, scale):
+    """Moment-fitted ellipse of the nucleus mask: semi-axes (um) and the major axis's angle
+    in model coordinates (y up), enlarged by `scale` to cover the blurred edge."""
+    ys, xs = np.nonzero(nuc)
+    ev, evec = np.linalg.eigh(np.cov(np.vstack([xs - xs.mean(), ys - ys.mean()])))
+    a, b = 2 * np.sqrt(ev[::-1]) * scale / s
+    major = evec[:, 1]
+    return a, b, np.arctan2(-major[1], major[0])      # image y points down, the model's up
+
+
+def ellipse_radius(a, b, phi, theta):
+    t = theta - phi
+    return a * b / np.hypot(b * np.cos(t), a * np.sin(t))
+
+
+def make_outside_ellipse(a_m, b_m, phi):
+    """Drop-in for simulation.outside_nucleus: True outside the ellipse (metres)."""
+    c, sn, ia2, ib2 = np.cos(phi), np.sin(phi), 1 / a_m ** 2, 1 / b_m ** 2
+
+    @njit(cache=False)
+    def outside_nucleus(x, y):
+        u = x * c + y * sn
+        v = -x * sn + y * c
+        return u * u * ia2 + v * v * ib2 > 1.0
+
+    return outside_nucleus
+
+
+def simulate_slot(job):
+    """Simulate RNPs from one start angle and return the farthest-travelling one that fits.
+    Runs in its own process, so simulation.py compiles with this slot's geometry: its numba
+    functions read outside_nucleus() and CELL_RADIUS (start = CELL_RADIUS / 2) at compile time."""
+    random.seed(job["seed"])                   # simulation.py's import-time k draw
+    sim = importlib.import_module("simulation")
+    if job["ellipse_m"]:
+        sim.outside_nucleus = make_outside_ellipse(*job["ellipse_m"])
+    else:
+        sim.NUCLEUS_RADIUS = job["nucleus_radius_m"]
+    sim.CELL_RADIUS = 2 * job["start_m"]
+    cfg = sim.SimulationConfig(total_time=int(job["minutes"] * 60), p_driv=job["p_driv"])
+    every = int(round(0.010 / cfg.dt))
+    a, ok, centre, s = job["angle"], job["ok"], job["centre"], job["s"]
+    best, n_fit = None, 0
+    for j in range(job["tries"]):
+        seed = job["seed"] * 1_000_000 + job["slot"] * 10_000 + j
+        seed_numba(seed)
+        o = sim.move(cfg, theta=a, stop_on_cell_exit=False)
+        xy = np.c_[o.x[::every], o.y[::every]] * 1e6
+        side = (np.arctan2(xy[:, 1], xy[:, 0]) - a + np.pi) % (2 * np.pi) - np.pi
+        if np.abs(side).max() > job["half_wedge"]:
+            continue
+        if not (fits(xy[::20], ok, centre, s) and fits(xy, ok, centre, s)):
+            continue
+        n_fit += 1
+        travel = np.hypot(*(xy - xy[0]).T).max()
+        # how much of the nucleus outline the path runs along: 1-degree bins with a point
+        # within 0.4 um of the wall
+        th = np.arctan2(xy[:, 1], xy[:, 0])
+        near = np.hypot(xy[:, 0], xy[:, 1]) - ellipse_radius(*job["wall_um"], th) < 0.4
+        hug = len(np.unique(np.floor(np.degrees(th[near]))))
+        score = (hug // 5, travel) if job["prefer"] == "hug" else (0, travel)
+        if best is None or score > best["score"]:
+            best = {"seed": seed, "travel": float(travel), "hug_deg": hug, "score": score,
+                    "xy": xy, "state": o.state_dt[::every].astype(bool)}
+    return job["slot"], n_fit, best, sim.k
 
 
 def main():
@@ -112,7 +184,10 @@ def main():
     ap.add_argument("--n-rnps", type=int, default=8)
     ap.add_argument("--rnp-minutes", type=float, default=20.0)
     ap.add_argument("--p-driv", type=float, default=0.004)
-    ap.add_argument("--pool", type=int, default=8000, help="RNP paths simulated to choose from")
+    ap.add_argument("--tries", type=int, default=1000, help="RNP paths simulated per slot")
+    ap.add_argument("--prefer", choices=("hug", "travel"), default="hug",
+                    help="among paths that fit: the one running along the most nucleus wall "
+                         "(ties: farthest travelled), or simply the farthest travelled")
     ap.add_argument("--wedge", type=float, default=1.0,
                     help="how far an RNP may wander sideways, as a fraction of half the slot spacing")
     ap.add_argument("--rnp-width-um", type=float, default=0.02)
@@ -125,10 +200,12 @@ def main():
     ap.add_argument("--rotation-deg", type=float, default=0.0)
     ap.add_argument("--px-per-um", type=float, default=None,
                     help="photo scale (default: model nucleus just covers the photo's)")
-    ap.add_argument("--geometry", choices=("photo", "model"), default="photo",
-                    help="photo: model nucleus resized to just cover the photo's, RNPs start "
-                         "2.5 um outside it (as in the model: 5 -> 7.5 um); model: 5 um nucleus, "
-                         "15 um cell, unchanged")
+    ap.add_argument("--geometry", choices=("ellipse", "photo", "model"), default="ellipse",
+                    help="the model's nucleus (see above)")
+    ap.add_argument("--ellipse-scale", type=float, default=1.06,
+                    help="enlarge the fitted ellipse so it covers the nucleus's blurred edge")
+    ap.add_argument("--bacteria", action="store_true",
+                    help="add goodsell.py's bacterium panels in a black corner")
     ap.add_argument("--protein-seconds", type=float, default=1.0)
     ap.add_argument("--green-threshold", type=float, default=35)
     ap.add_argument("--edge-margin-px", type=int, default=8)
@@ -151,69 +228,83 @@ def main():
     sim = importlib.import_module("simulation")
     g = importlib.import_module("goodsell")
 
-    im, cell, ok, centre, reach = masks(args.photo, args.green_threshold, 6, args.edge_margin_px, 3)
+    im, cell, nuc, ok, centre, reach = masks(args.photo, args.green_threshold, 6,
+                                             args.edge_margin_px, 3)
     s = args.px_per_um or reach / (sim.NUCLEUS_RADIUS * 1e6)
-    if args.geometry == "photo":
-        # simulation.py's numba functions read these globals when they compile (first call,
-        # into this run's fresh cache); _move starts RNPs at CELL_RADIUS / 2
-        sim.NUCLEUS_RADIUS = reach / s * 1e-6
-        sim.CELL_RADIUS = 2 * (sim.NUCLEUS_RADIUS + 2.5e-6)
-    R_nuc, R_cell = sim.NUCLEUS_RADIUS * 1e6, sim.CELL_RADIUS * 1e6
-    print(f"photo {im.shape[1]}x{im.shape[0]} px at {s:.1f} px/um; nucleus centre "
-          f"({centre[0]:.0f}, {centre[1]:.0f}), reaching {reach:.0f} px = {reach / s:.2f} um")
-    print(f"model geometry ({args.geometry}): nucleus radius {R_nuc:.2f} um, RNPs start at "
-          f"{R_cell / 2:.2f} um, cell radius {R_cell:.2f} um")
-
-    # Pool of RNP paths, all started at angle 0 and sampled every 10 ms (as drawn). Paths are
-    # simulated one at a time and only a summary is kept: whether each fits each slot, stays
-    # in its own wedge (start angle +/- half the slot spacing x --wedge, so clusters do not
-    # pile up), and how far it travels. The chosen paths are re-simulated from their seeds.
-    cfg = sim.SimulationConfig(total_time=int(args.rnp_minutes * 60), p_driv=args.p_driv)
-    every = int(round(0.010 / cfg.dt))
-
-    def rnp_path(j):
-        seed_numba(args.seed * 1_000_000 + j)
-        o = sim.move(cfg, theta=0.0, stop_on_cell_exit=True)
-        return np.c_[o.x[::every], o.y[::every]] * 1e6, o.state_dt[::every].astype(bool)
-
     angles = np.deg2rad(args.rotation_deg) + 2 * np.pi * np.arange(args.n_rnps) / args.n_rnps
+    ellipse = None
+    if args.geometry == "ellipse":
+        ellipse = nucleus_ellipse(nuc, s, args.ellipse_scale)
+        R_nuc = ellipse[0]                      # semi-major (for the protein's reflection)
+        starts = [ellipse_radius(*ellipse, a) + 2.5 for a in angles]
+        desc = (f"ellipse {ellipse[0]:.2f} x {ellipse[1]:.2f} um, major axis at "
+                f"{np.degrees(ellipse[2]):.0f} deg")
+    else:
+        R_nuc = reach / s if args.geometry == "photo" else sim.NUCLEUS_RADIUS * 1e6
+        starts = [R_nuc + 2.5 if args.geometry == "photo" else sim.CELL_RADIUS * 1e6 / 2] * len(angles)
+        desc = f"circle of radius {R_nuc:.2f} um"
+    R_cell = 2 * max(starts)                    # only bounds the protein; RNPs are not stopped
+    print(f"photo {im.shape[1]}x{im.shape[0]} px at {s:.1f} px/um; nucleus centre "
+          f"({centre[0]:.0f}, {centre[1]:.0f})")
+    print(f"model nucleus ({args.geometry}): {desc}; RNPs start "
+          f"{min(starts):.2f}-{max(starts):.2f} um from its centre")
+
+    # RNP paths, sampled every 10 ms (as drawn): each slot simulated in its own process
+    half = np.pi / args.n_rnps * args.wedge
     key = hashlib.sha1(args.photo.read_bytes() + json.dumps(
-        [args.seed, args.pool, args.rnp_minutes, args.p_driv, args.n_rnps, args.rotation_deg,
-         args.wedge, s, args.green_threshold, args.edge_margin_px]).encode()).hexdigest()[:12]
-    cache = args.outdir / f"pool_summary_{key}.npz"
+        [args.seed, args.tries, args.rnp_minutes, args.p_driv, args.n_rnps, args.rotation_deg,
+         args.wedge, s, args.green_threshold, args.edge_margin_px, args.geometry,
+         args.ellipse_scale, args.prefer]).encode()).hexdigest()[:12]
+    cache = args.outdir / f"rnp_paths_{key}.npz"
+    results = {}
     if cache.exists():
         z = np.load(cache)
-        fit, travel = z["fit"], z["travel"]
-        print(f"loaded the pool summary from {cache}")
+        for i in range(args.n_rnps):
+            if f"xy{i}" in z:
+                results[i] = (int(z["n_fit"][i]), {"seed": int(z["seed"][i]), "travel": float(z["travel"][i]),
+                                                   "hug_deg": int(z["hug_deg"][i]),
+                                                   "xy": z[f"xy{i}"], "state": z[f"state{i}"]})
+            else:
+                results[i] = (int(z["n_fit"][i]), None)
+        print(f"loaded the chosen RNP paths from {cache}")
     else:
-        half = np.pi / args.n_rnps * args.wedge
-        fit = np.zeros((args.pool, args.n_rnps), bool)
-        travel = np.zeros(args.pool)
-        for j in range(args.pool):
-            xy, _ = rnp_path(j)
-            travel[j] = np.hypot(*(xy - xy[0]).T).max()
-            if np.abs(np.arctan2(xy[:, 1], xy[:, 0])).max() > half:
-                continue
-            for i, a in enumerate(angles):
-                fit[j, i] = (fits(rotate(xy[::20], a), ok, centre, s)
-                             and fits(rotate(xy, a), ok, centre, s))
+        jobs = [{"slot": i, "angle": float(a), "start_m": st * 1e-6, "seed": args.seed,
+                 "ellipse_m": (ellipse[0] * 1e-6, ellipse[1] * 1e-6, ellipse[2]) if ellipse else None,
+                 "nucleus_radius_m": R_nuc * 1e-6, "minutes": args.rnp_minutes,
+                 "p_driv": args.p_driv, "tries": args.tries, "half_wedge": half,
+                 "ok": ok, "centre": centre, "s": s, "prefer": args.prefer,
+                 "wall_um": ellipse if ellipse else (R_nuc, R_nuc, 0.0)}
+                for i, (a, st) in enumerate(zip(angles, starts))]
+        workers = min(len(jobs), os.cpu_count() or 1)
+        with ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn")) as ex:
+            for slot, n_fit, best, k_used in ex.map(simulate_slot, jobs):
+                results[slot] = (n_fit, best)
+        arrays = {"n_fit": np.array([results[i][0] for i in range(args.n_rnps)]),
+                  "seed": np.array([results[i][1]["seed"] if results[i][1] else -1 for i in range(args.n_rnps)]),
+                  "travel": np.array([results[i][1]["travel"] if results[i][1] else 0.0 for i in range(args.n_rnps)]),
+                  "hug_deg": np.array([results[i][1]["hug_deg"] if results[i][1] else 0 for i in range(args.n_rnps)])}
+        for i in range(args.n_rnps):
+            if results[i][1]:
+                arrays[f"xy{i}"] = results[i][1]["xy"].astype(np.float32)
+                arrays[f"state{i}"] = results[i][1]["state"]
         args.outdir.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(cache, fit=fit, travel=travel)
-        print(f"simulated {args.pool} RNP paths of {args.rnp_minutes:g} min (k = {sim.k:.3e} N/m)")
+        np.savez_compressed(cache, **arrays)
+        print(f"simulated {args.tries} RNP paths of {args.rnp_minutes:g} min per slot, "
+              f"{workers} slots at a time (k = {sim.k:.3e} N/m)")
 
-    chosen, used = [], set()
+    chosen = []
     for i, a in enumerate(angles):
-        cands = [j for j in np.flatnonzero(fit[:, i]) if j not in used]
-        if not cands:
+        n_fit, best = results[i]
+        if best is None:
             print(f"  slot {i} ({np.degrees(a) % 360:5.1f} deg): no path fits; left empty")
             continue
-        j = int(max(cands, key=lambda j: travel[j]))
-        used.add(j)
-        chosen.append({"slot": i, "angle_deg": float(np.degrees(a) % 360), "pool_index": j,
-                       "numba_seed": args.seed * 1_000_000 + j, "farthest_um": float(travel[j])})
-        print(f"  slot {i} ({np.degrees(a) % 360:5.1f} deg): {len(cands)}/{args.pool} paths fit "
-              f"({100 * len(cands) / args.pool:.2f}%); using #{j}, which reaches "
-              f"{travel[j]:.1f} um from its start")
+        chosen.append({"slot": i, "angle_deg": float(np.degrees(a) % 360), "start_um": starts[i],
+                       "numba_seed": best["seed"], "fitted": n_fit, "farthest_um": best["travel"],
+                       "along_nucleus_deg": best["hug_deg"],
+                       "xy": best["xy"], "state": best["state"]})
+        print(f"  slot {i} ({np.degrees(a) % 360:5.1f} deg): {n_fit}/{args.tries} paths fit "
+              f"({100 * n_fit / args.tries:.2f}%); using seed {best['seed']}: runs along "
+              f"{best['hug_deg']} deg of the nucleus, reaches {best['travel']:.1f} um from its start")
 
     # protein: 1 s of free diffusion, started at the point deepest inside the cytoplasm
     # along each candidate direction (right side first, as in the mock-up)
@@ -222,7 +313,7 @@ def main():
     prot = None
     for ang in (15, 35, 55, -10, 75, 300, 120):
         u = np.array([np.cos(np.deg2rad(ang)), np.sin(np.deg2rad(ang))])
-        radii = np.linspace(R_nuc, R_cell, 400)
+        radii = np.linspace(R_nuc, 25.0, 400)
         p = np.rint(to_px(radii[:, None] * u, centre, s)).astype(int)
         keep = (p[:, 0] >= 0) & (p[:, 0] < ok.shape[1]) & (p[:, 1] >= 0) & (p[:, 1] < ok.shape[0])
         r0 = radii[keep][np.argmax(depth[p[keep, 1], p[keep, 0]])]
@@ -244,9 +335,8 @@ def main():
                          "font.sans-serif": ["Helvetica Neue", "Helvetica", "Arial", "DejaVu Sans"]})
     rnp_diff, rnp_dir = [], []
     for c in chosen:
-        xy, state = rnp_path(c["pool_index"])
-        p = to_px(rotate(xy, np.deg2rad(c["angle_deg"])), centre, s)
-        d, r = runs_by_state(p[:, 0], p[:, 1], state, 1)
+        p = to_px(c["xy"].astype(float), centre, s)
+        d, r = runs_by_state(p[:, 0], p[:, 1], c["state"], 1)
         rnp_diff += d
         rnp_dir += r
     prot_px = None
@@ -354,8 +444,9 @@ def main():
             x_leg, y_leg = W - 0.30 * W, 0.045 * H
             entries = ((args.rnp_color, 0.14, f"RNPs, {args.rnp_minutes:g} min"),
                        (DIRECTED, 0.12, "directed runs"),
-                       (args.protein_color, 0.14, f"protein, {args.protein_seconds:g} s"),
-                       (rc.sugar_color, 0.14, "sugar"))
+                       (args.protein_color, 0.14, f"protein, {args.protein_seconds:g} s"))
+            if L:
+                entries += ((rc.sugar_color, 0.14, "sugar (bacterium)"),)
             for i, (colour, lw_um, label) in enumerate(entries):
                 y = y_leg + 0.95 * i * unit
                 ax.plot([x_leg - 1.2 * unit, x_leg - 0.3 * unit], [y, y], color=colour,
@@ -372,9 +463,10 @@ def main():
     # ---- overlays for the photo itself (same size as the photo, at UPSCALE)
     args.outdir.mkdir(parents=True, exist_ok=True)
     whole = (0, 0, W, H)
-    L = bacteria_layout(whole, True, ("bottom-left", "bottom-right", "top-left"))
-    print("bacterium panels: " + (f"x{L['mag']:g} in the {L['corner']} corner" if L
-                                  else "no black corner is big enough; left out"))
+    L = bacteria_layout(whole, True, ("bottom-left", "bottom-right", "top-left")) if args.bacteria else None
+    if args.bacteria:
+        print("bacterium panels: " + (f"x{L['mag']:g} in the {L['corner']} corner" if L
+                                      else "no black corner is big enough; left out"))
     render(whole, UPSCALE, {"paths", "bacteria", "labels"}, args.outdir / "photo_overlay.png", L)
     render(whole, UPSCALE, {"paths", "bacteria"}, args.outdir / "photo_overlay_nolabels.png", L)
     over = Image.open(args.outdir / "photo_overlay.png").convert("RGBA")
@@ -390,7 +482,7 @@ def main():
     X0 = (bx0 + bx1) / 2 - PW / (2 * k)
     Y0 = (by0 + by1) / 2 - (band + (PH - band) / 2) / k
     window = (X0, Y0, X0 + PW / k, Y0 + PH / k)
-    Lc = bacteria_layout(window, False, ("bottom-right", "bottom-left"))
+    Lc = bacteria_layout(window, False, ("bottom-right", "bottom-left")) if args.bacteria else None
     tmp_paths, tmp_bact = args.outdir / "_cover_paths.png", args.outdir / "_cover_bacteria.png"
     render(window, k, {"paths"}, tmp_paths, None, rnp_alpha=args.cover_rnp_alpha)
     render(window, k, {"bacteria"}, tmp_bact, Lc)
@@ -433,15 +525,18 @@ def main():
            font=ImageFont.load_default(size=int(0.04 * PW)))
     preview.save(args.outdir / "cover_photo_final_preview.png")
     print(f"cover: {PW}x{PH} px ({args.cover_in[0]:g} x {args.cover_in[1]:g} in at {DPI} dpi), "
-          f"photo enlarged {k:.2f}x; bacterium panels "
-          + (f"x{Lc['mag']:g} in the {Lc['corner']} corner" if Lc else "left out (no room)"))
+          f"photo enlarged {k:.2f}x" + ("" if not args.bacteria else "; bacterium panels "
+          + (f"x{Lc['mag']:g} in the {Lc['corner']} corner" if Lc else "left out (no room)")))
 
     (args.outdir / "photo_choice.json").write_text(json.dumps(
         {"photo": str(args.photo), "px_per_um": s, "nucleus_centre_px": centre.tolist(),
-         "seed": args.seed, "pool": args.pool, "rnp_minutes": args.rnp_minutes,
+         "seed": args.seed, "tries_per_slot": args.tries, "rnp_minutes": args.rnp_minutes,
          "p_driv": args.p_driv, "k": sim.k, "geometry": args.geometry,
-         "nucleus_radius_um": R_nuc, "start_radius_um": R_cell / 2, "cell_radius_um": R_cell,
-         "wedge": args.wedge, "rnps": chosen, "protein": prot}, indent=2))
+         "nucleus": ({"semi_axes_um": ellipse[:2], "major_axis_deg": float(np.degrees(ellipse[2])),
+                      "scale": args.ellipse_scale} if ellipse else {"radius_um": R_nuc}),
+         "wedge": args.wedge, "protein": prot,
+         "rnps": [{k_: v for k_, v in c.items() if k_ not in ("xy", "state")} for c in chosen]},
+        indent=2))
     print(f"wrote {args.outdir}/photo_overlay.png, photo_overlay_nolabels.png, photo_preview.png, "
           "cover_photo_final.png, cover_photo_final_preview.png, photo_choice.json")
 
