@@ -171,8 +171,11 @@ def simulate_slot(job):
         hug = len(np.unique(np.floor(np.degrees(th[near]))))
         score = (hug // 5, travel) if job["prefer"] == "hug" else (0, travel)
         if best is None or score > best["score"]:
+            # 10-ms segments during which the RNP hopped to a new trap (hop_t[0] is the first trap)
+            hops = np.unique(np.clip(np.ceil(o.hop_t[1:] / (every * cfg.dt)).astype(int) - 1,
+                                     0, len(xy) - 2))
             best = {"seed": seed, "travel": float(travel), "hug_deg": hug, "score": score,
-                    "xy": xy, "state": o.state_dt[::every].astype(bool)}
+                    "xy": xy, "state": o.state_dt[::every].astype(bool), "hops": hops}
     return job["slot"], n_fit, best, sim.k
 
 
@@ -191,6 +194,8 @@ def main():
     ap.add_argument("--wedge", type=float, default=1.0,
                     help="how far an RNP may wander sideways, as a fraction of half the slot spacing")
     ap.add_argument("--rnp-width-um", type=float, default=0.02)
+    ap.add_argument("--trap-fraction", type=float, default=0.10,
+                    help="fraction of the within-trap lines drawn (hops and directed runs always are)")
     ap.add_argument("--rnp-alpha", type=float, default=0.85)
     ap.add_argument("--rnp-color", default="#FFFFFF")
     ap.add_argument("--capsule-color", default="#1E222A", help="bacterium fill")
@@ -254,7 +259,7 @@ def main():
     key = hashlib.sha1(args.photo.read_bytes() + json.dumps(
         [args.seed, args.tries, args.rnp_minutes, args.p_driv, args.n_rnps, args.rotation_deg,
          args.wedge, s, args.green_threshold, args.edge_margin_px, args.geometry,
-         args.ellipse_scale, args.prefer]).encode()).hexdigest()[:12]
+         args.ellipse_scale, args.prefer, "hops"]).encode()).hexdigest()[:12]
     cache = args.outdir / f"rnp_paths_{key}.npz"
     results = {}
     if cache.exists():
@@ -263,7 +268,8 @@ def main():
             if f"xy{i}" in z:
                 results[i] = (int(z["n_fit"][i]), {"seed": int(z["seed"][i]), "travel": float(z["travel"][i]),
                                                    "hug_deg": int(z["hug_deg"][i]),
-                                                   "xy": z[f"xy{i}"], "state": z[f"state{i}"]})
+                                                   "xy": z[f"xy{i}"], "state": z[f"state{i}"],
+                                                   "hops": z[f"hops{i}"]})
             else:
                 results[i] = (int(z["n_fit"][i]), None)
         print(f"loaded the chosen RNP paths from {cache}")
@@ -287,6 +293,7 @@ def main():
             if results[i][1]:
                 arrays[f"xy{i}"] = results[i][1]["xy"].astype(np.float32)
                 arrays[f"state{i}"] = results[i][1]["state"]
+                arrays[f"hops{i}"] = results[i][1]["hops"]
         args.outdir.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(cache, **arrays)
         print(f"simulated {args.tries} RNP paths of {args.rnp_minutes:g} min per slot, "
@@ -301,7 +308,7 @@ def main():
         chosen.append({"slot": i, "angle_deg": float(np.degrees(a) % 360), "start_um": starts[i],
                        "numba_seed": best["seed"], "fitted": n_fit, "farthest_um": best["travel"],
                        "along_nucleus_deg": best["hug_deg"],
-                       "xy": best["xy"], "state": best["state"]})
+                       "xy": best["xy"], "state": best["state"], "hops": best["hops"]})
         print(f"  slot {i} ({np.degrees(a) % 360:5.1f} deg): {n_fit}/{args.tries} paths fit "
               f"({100 * n_fit / args.tries:.2f}%); using seed {best['seed']}: runs along "
               f"{best['hug_deg']} deg of the nucleus, reaches {best['travel']:.1f} um from its start")
@@ -333,12 +340,22 @@ def main():
     H, W = ok.shape
     plt.rcParams.update({"font.family": "sans-serif",
                          "font.sans-serif": ["Helvetica Neue", "Helvetica", "Arial", "DejaVu Sans"]})
+    # RNP lines, one per 10-ms step. Hops between traps, directed runs and the joins between
+    # them are all drawn; of the lines within a trap only a random --trap-fraction is, so each
+    # trap shows as a "snowflake" of jumps around its centre instead of a solid blob.
+    rng = np.random.default_rng(args.seed)
     rnp_diff, rnp_dir = [], []
     for c in chosen:
         p = to_px(c["xy"].astype(float), centre, s)
-        d, r = runs_by_state(p[:, 0], p[:, 1], c["state"], 1)
-        rnp_diff += d
-        rnp_dir += r
+        st = c["state"].astype(bool)
+        rnp_dir += runs_by_state(p[:, 0], p[:, 1], st, 1)[1]
+        seg = np.stack([p[:-1], p[1:]], axis=1)
+        hop = np.zeros(len(seg), bool)
+        hop[c["hops"]] = True
+        join = st[:-1] != st[1:]
+        keep = ~(st[:-1] & st[1:]) & (hop | join | (rng.random(len(seg)) < args.trap_fraction))
+        rnp_diff.append(seg[keep])
+    rnp_diff = np.concatenate(rnp_diff)
     prot_px = None
     if prot:
         pxy, _ = simulate_protein(gcfg.D_protein, args.protein_seconds, np.array(prot["start_um"]),
@@ -535,7 +552,7 @@ def main():
          "nucleus": ({"semi_axes_um": ellipse[:2], "major_axis_deg": float(np.degrees(ellipse[2])),
                       "scale": args.ellipse_scale} if ellipse else {"radius_um": R_nuc}),
          "wedge": args.wedge, "protein": prot,
-         "rnps": [{k_: v for k_, v in c.items() if k_ not in ("xy", "state")} for c in chosen]},
+         "rnps": [{k_: v for k_, v in c.items() if k_ not in ("xy", "state", "hops")} for c in chosen]},
         indent=2))
     print(f"wrote {args.outdir}/photo_overlay.png, photo_overlay_nolabels.png, photo_preview.png, "
           "cover_photo_final.png, cover_photo_final_preview.png, photo_choice.json")
