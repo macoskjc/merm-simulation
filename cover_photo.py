@@ -195,11 +195,19 @@ def simulate_slot(job):
 
 
 def simulated_cell(cell, ellipse, centre, s, k, window, size, args):
-    """A simulated fluorescence image of the model cell at cover resolution. RNPs are
-    diffraction-limited green specks at random positions in the cytoplasm (Gaussian spots,
-    --psf-um) over a dim diffuse green; the nucleus is the model's ellipse in blue with a
-    smooth random texture. Only the cell's outline comes from the photo (its segmented
-    boundary, smoothed): no pixel of the micrograph is used."""
+    """A simulated widefield fluorescence image of the model cell, at cover resolution.
+
+    Brightness follows how much fluorescent material lies along each line of sight, and the
+    optics blur it (no pixel of the micrograph is used; only the cell's outline comes from
+    the photo, as its segmented boundary, smoothed):
+      * cytoplasm: the cell thins toward its edge, so the diffuse green fades as
+        1 - exp(-distance from the edge / --edge-falloff-um), and RNPs are scattered in
+        proportion to it (fewer where the cell is thin);
+      * RNPs: specks at random positions, each a Gaussian of s.d. --psf-um (60x, NA 0.7);
+      * nucleus: the model's ellipse as a dome (thickest in the middle), with a fine random
+        texture and two or three dimmer patches the size of nucleoli;
+      * the diffuse green and the nucleus are then blurred by --defocus-um, as by
+        out-of-focus light."""
     PW, PH = size
     X0, Y0 = window[0], window[1]
     um = s * k                                            # cover pixels per um
@@ -210,14 +218,14 @@ def simulated_cell(cell, ellipse, centre, s, k, window, size, args):
     placed = Image.new("L", (PW, PH), 0)
     placed.paste(soft, (round(-X0 * k), round(-Y0 * k)))
     inside = np.asarray(placed) > 127
-    cyto = ndi.gaussian_filter(inside.astype(float), 0.5 * um)          # soft membrane edge
+    thick = 1 - np.exp(-ndi.distance_transform_edt(inside) / um / args.edge_falloff_um)
     x = (np.arange(PW)[None, :] / k + X0 - centre[0]) / s                # model um, y up
     y = -(np.arange(PH)[:, None] / k + Y0 - centre[1]) / s
     a, b, phi = ellipse
     u, v = x * np.cos(phi) + y * np.sin(phi), -x * np.sin(phi) + y * np.cos(phi)
-    nuc_hard = (u / a) ** 2 + (v / b) ** 2 <= 1
-    nuc = ndi.gaussian_filter(nuc_hard.astype(float), 0.15 * um)
-    cyto = cyto * (1 - nuc)
+    rho2 = (u / a) ** 2 + (v / b) ** 2
+    nuc_mask = rho2 <= 1
+    cyto = thick * ~nuc_mask
 
     def smooth_noise(scale_um):
         n = max(4, int(PW / (scale_um * um)))
@@ -225,19 +233,30 @@ def simulated_cell(cell, ellipse, centre, s, k, window, size, args):
         z = ndi.zoom(lr, (PH / (lr.shape[0] - 3), PW / (lr.shape[1] - 3)), order=3)[:PH, :PW]
         return z / z.std()
 
-    area_um2 = (cyto > 0.5).sum() / um ** 2
+    # nucleus: dome profile, fine texture, a few dimmer nucleolus-sized patches
+    nucleus = np.sqrt(np.clip(1 - rho2, 0, 1)) ** 0.5 * (1 + 0.10 * smooth_noise(0.4)
+                                                         + 0.08 * smooth_noise(1.5))
+    for _ in range(rng.integers(2, 4)):
+        r, t, w = rng.uniform(0, 0.55), rng.uniform(0, 2 * np.pi), rng.uniform(0.6, 0.9)
+        nucleus *= 1 - 0.35 * np.exp(-((u - r * a * np.cos(t)) ** 2 + (v - r * b * np.sin(t)) ** 2)
+                                     / (2 * w ** 2))
+    blur = args.defocus_um * um
+    blue = ndi.gaussian_filter(0.6 * nucleus * nuc_mask, blur)
+    diffuse = ndi.gaussian_filter(0.20 * cyto * (1 + 0.25 * smooth_noise(2.0)), blur)
+
+    # RNP specks, scattered in proportion to the local thickness of the cytoplasm
+    area_um2 = (inside & ~nuc_mask).sum() / um ** 2
     n = int(args.puncta_per_um2 * area_um2)
-    idx = rng.choice(np.flatnonzero((cyto > 0.5).ravel()), size=n, replace=False)
+    weights = cyto.ravel() / cyto.sum()
+    idx = rng.choice(PH * PW, size=n, replace=False, p=weights)
     spots = np.zeros(PH * PW)
     np.add.at(spots, idx, rng.lognormal(0.0, 0.45, n))
     sigma = args.psf_um * um
     spots = ndi.gaussian_filter(spots.reshape(PH, PW), sigma) * 2 * np.pi * sigma ** 2
-    green = 0.20 * cyto * (1 + 0.25 * smooth_noise(2.0)) + args.puncta_brightness * spots
-    blue = 0.55 * nuc * (1 + 0.18 * smooth_noise(1.0))
+    green = diffuse + args.puncta_brightness * spots
     rgb = green[..., None] * np.array([0.15, 1.0, 0.25]) + blue[..., None] * np.array([0.12, 0.25, 1.0])
     print(f"simulated cell: {n} RNP specks over {area_um2:.0f} um^2 of cytoplasm")
     return Image.fromarray((np.clip(rgb, 0, 1) * 255).round().astype(np.uint8))
-
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
@@ -296,6 +315,10 @@ def main():
                     help="simulated background: peak brightness of a typical RNP speck (0-1)")
     ap.add_argument("--puncta-per-um2", type=float, default=1.0,
                     help="simulated background: RNP specks per um^2 of cytoplasm")
+    ap.add_argument("--edge-falloff-um", type=float, default=1.5,
+                    help="simulated background: how far in from the edge the cell reaches full thickness")
+    ap.add_argument("--defocus-um", type=float, default=0.35,
+                    help="simulated background: blur of the diffuse green and the nucleus")
     ap.add_argument("--psf-um", type=float, default=0.16,
                     help="simulated background: Gaussian s.d. of each speck (60x, NA 0.7)")
     ap.add_argument("--protein-sample-ms", type=float, default=1.0,
