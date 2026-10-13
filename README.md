@@ -37,6 +37,7 @@ Note: before October 2026, `--p_driv` defaulted to 0.03, i.e. the 3%-of-tracks f
 - `msd.py`: legacy mean-squared-displacement analysis; it contains hardcoded file paths from the original author's machine, so edit those before use.
 - `combine-tifs.ijm`, `combine-mega-tif.ijm`: ImageJ scripts that combine TIF frame stacks. The output TIF files are large, so put all files to be combined into one folder and run `combine-tifs` on that folder; stacks named `{NAME}{NUM}` are combined in `{NUM}` order.
 - `goodsell.py`, `validate_goodsell.py`: Figure 1 (see below).
+- `cover_cell.py`, `cover_cell_geometry.npz`: the cover art (see below); `cover_art.py`: an earlier cover mock-up.
 - `sim-paper.pdf`: write-up of the simulation and its results.
 
 ## License
@@ -126,3 +127,22 @@ This is also the diffusion-limited estimate in [*Cell Biology by the Numbers*](h
 - Paths are sampled every ~3.9 µs, projected onto the page and snapped to a grid 64 pixels across the cell.
   - They are sampled projections, not molecular-scale resolved paths.
   - Paths can cross on the page without the molecules touching.
+
+## Cover art (`cover_cell.py`)
+
+The cover image submitted with the Perspective is computed by `cover_cell.py`: a simulation, rendered in Python, not a micrograph and not AI-generated.
+
+```
+python cover_cell.py                       # -> cover_output/cover_simulated_final.png (~3 min)
+python cover_cell.py --variant fade        # older parts of each RNP path more transparent
+python cover_cell.py --variant numbered    # the eight RNPs labelled 1-8
+```
+
+- **Cell geometry.** `cover_cell_geometry.npz` holds two black-and-white outlines, the cell and its nucleus, and the scale (26.2 px/µm). They were traced from the middle cell of Fig. 1F of Moran et al. 2022 (*J Virol*, doi:10.1128/jvi.00934-22: A549 cells infected with VSV-PeGFP), whose 25 µm scale bar sets the scale. No pixels of the micrograph are used.
+- **RNP motion.** `simulation.py`, unchanged, with the paper's settings (`p_driv` = 0.004), for 20 minutes per RNP. The model's nucleus is an ellipse fitted to the cell's, and each RNP starts 2.5 µm outside it, as in the model.
+- **The cell.** Simulated fluorescence: RNPs as diffraction-limited green specks scattered through the cytoplasm, which thins toward the membrane; the nucleus as an ellipsoid with a fine random texture, with cytoplasm still fluorescing above and below it; and slight defocus blur.
+- **Drawing.** Each RNP's path is drawn every 10 ms. Every hop between traps and every directed run (orange) is drawn, but only 10% of the lines within a trap, so each trap shows as a small "snowflake". The purple path is a GFP-sized protein diffusing freely for 1 s, the protein of Figure 1.
+- **Choosing the eight RNPs** (an illustration choice): for each of eight start directions, 1500 RNPs are simulated (seeded). Only paths that stay inside the cell and within their own sector are kept, and the eight are chosen so that no two come within 0.8 µm of each other, each the farthest-travelling one that does. The script prints what fraction of the simulated RNPs qualified in each direction.
+
+The layout follows a mock-up by Ludovic Autin. Everything is seeded, so the same command redraws the same image.
+

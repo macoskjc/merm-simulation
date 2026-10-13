@@ -1,50 +1,53 @@
 """
-Fit the cover-art RNP simulation into a micrograph of a real cell.
+The PNAS cover candidate: Song Kim's RNP simulation (simulation.py), run in the geometry of
+a real infected cell and drawn as a simulated fluorescence image. Everything in the picture
+is computed here: no micrograph pixels, no AI-generated imagery.
 
-The cell photo (nucleus in blue, cytoplasm in green) is segmented, the model's nucleus is
-shaped and placed to match the photo's, and each RNP slot is filled with a simulated path
-that stays inside the green cytoplasm.
+    python cover_cell.py                       # -> cover_output/cover_simulated_final.png
+    python cover_cell.py --variant fade        # older parts of each path more transparent
+    python cover_cell.py --variant numbered    # RNPs labelled 1-8
 
-    python cover_photo.py --photo cover_output/cell_photo.png --px-per-um 26.2
+What comes from where:
+  * Cell geometry: cover_cell_geometry.npz holds two outlines (cell and nucleus, as
+    black-and-white masks) and the scale, 26.2 px/um. They were segmented from the middle
+    cell of Fig. 1F in Moran et al. 2022 (J Virol, doi:10.1128/jvi.00934-22; A549 cells
+    infected with VSV-PeGFP, DAPI-stained nuclei), whose 25 um scale bar sets the scale.
+    No image data is stored or used. (--photo with --save-cell-file regenerates the file.)
+  * RNP motion: simulation.py unchanged (p_driv = 0.004, as in the paper), 20 min per RNP.
+    The model's nucleus is an ellipse fitted to the cell's (moments, enlarged 6% to cover
+    its blurred edge), swapped into simulation.py's outside_nucleus() before it compiles;
+    each RNP starts 2.5 um outside it in its own direction, as in the model (5 um nucleus
+    -> start at 7.5 um). --geometry photo uses a circle instead; --geometry model uses
+    simulation.py's own 5 um nucleus and 15 um cell.
+  * Protein: 1 s of free diffusion with goodsell.py's GFP-sized protein (D = 4.54 um^2/s).
+  * The cell itself (--background simulated): RNPs as diffraction-limited specks scattered
+    in proportion to the cytoplasm's thickness, which thins toward the membrane; the nucleus
+    as an ellipsoid with fine random texture and nucleolus-sized dimmer patches, with
+    cytoplasm still fluorescing above and below it; and defocus blur. See simulated_cell().
+  * Drawing: each RNP's path every 10 ms; every hop between traps and every directed run
+    (orange) is drawn, but only 10% of the lines within a trap (--trap-fraction), so traps
+    show as "snowflakes"; the paths glow (two Gaussian blurs, screen-blended).
 
-26.2 px/um is the cover photo's scale: it is the middle cell of Fig. 1F in Moran et al.
-2022 (J Virol, doi:10.1128/jvi.00934-22; A549 cells, VSV-PeGFP green, DAPI blue), and the
-crop is 11.2x the figure, whose 25 um bar is 58.4 px (2.34 px/um).
-
-Geometry (--geometry; the RNP dynamics are simulation.py's, unchanged, in every case):
-  ellipse (default)  the model's nucleus is an ellipse fitted to the photo's (by moments,
-                     enlarged 6% to cover its blurred edge), so RNPs that reach it slide
-                     along the real nucleus outline; each RNP starts 2.5 um outside it in
-                     its own direction, as in the model (5 um nucleus -> start at 7.5 um).
-                     Done by swapping simulation.py's outside_nucleus() before it compiles.
-  photo              a circle just covering the photo's nucleus, start 2.5 um outside it
-  model              simulation.py's own 5 um nucleus and 15 um cell
-
-How the paths are chosen (illustration only):
+How the eight RNPs are chosen (illustration only):
   * Each slot (start angle) is simulated --tries times (seeded), in its own process so
     simulation.py compiles with that slot's start position; slots run in parallel.
-  * Most 20-min paths leave a cell this size, so only paths that stay inside the photo's
-    cytoplasm, and within their own wedge around the nucleus, are kept. Slots then choose in
-    turn (fewest candidates first), each taking its best path that stays --min-gap-um clear
-    of every path already chosen, so no two RNPs touch. "Best" is the farthest-travelling
-    path (--prefer travel) or the one running along the most nucleus wall (--prefer hug).
-    The script prints what fraction fitted each slot. The chosen paths are cached in
-    --outdir, so redrawing with the same settings skips the simulation.
-  * Because the RNPs do not interact, this is equivalent to resimulating whole 8-RNP
-    draws until all eight fit, only much faster.
+  * Most 20-min paths leave a cell this size, so only paths that stay inside the cytoplasm,
+    and within their own wedge around the nucleus, are kept. Slots then choose in turn
+    (fewest candidates first), each taking its best path that stays --min-gap-um clear of
+    every path already chosen, so no two RNPs touch. "Best" is the farthest-travelling path
+    (--prefer travel) or the one running along the most nucleus wall (--prefer hug). The
+    script prints what fraction fitted each slot. The chosen paths are cached in --outdir.
+  * Because the RNPs do not interact, this is equivalent to resimulating whole 8-RNP draws
+    until all eight fit, only much faster.
 
 Outputs (in --outdir):
-    photo_overlay.png    transparent, 3x the photo's pixel size: RNP paths (white) with
-                         directed runs (orange), the protein (purple), legend and scale bar
-                         (and, with --bacteria, goodsell.py's panels in a black corner)
-    photo_overlay_nolabels.png   the same without any text, legend or scale bar
-    cover_photo_final.png        the cover: 8.5 x 11 in at 300 dpi, full-bleed black, no text,
-                                 the cell as large as fits below a masthead band (top 26%),
-                                 the photo smoothed back from its blocky enlargement, isolated
-                                 from neighbouring cells and lifted, and the paths glowing
-    cover_photo_final_preview.png  the same with the masthead area outlined
-    photo_preview.png    the photo with the overlay on top
-    photo_choice.json    scale, geometry and seeds, so the choice can be reproduced
+    cover_simulated_final[_fade|_numbered].png   the cover, 8.5 x 11 in at 300 dpi
+    ..._preview.png        the same with the masthead area outlined
+    photo_overlay.png      the paths, legend and scale bar on a transparent background, at
+                           3x the outline's pixel size (photo_overlay_nolabels.png: no text)
+    photo_choice.json      scale, geometry and seeds, so the choice can be reproduced
+With --photo, also photo_preview.png (the micrograph with the overlay) and
+--background photo (the micrograph, smoothed, as the cover's background).
 """
 
 import os
@@ -82,8 +85,8 @@ UPSCALE = 3              # overlay pixels per photo pixel
 DPI = 300
 
 
-def masks(photo, green_thr, smooth_px, edge_margin_px, nucleus_margin_px):
-    """Cytoplasm where paths may go, the nucleus, and the nucleus centroid (photo pixels)."""
+def segment_photo(photo, green_thr, smooth_px):
+    """Cell and nucleus masks segmented from the micrograph (photo pixels)."""
     im = np.asarray(Image.open(photo).convert("RGB")).astype(float)
     g = ndi.gaussian_filter(im[..., 1], smooth_px)
     b = ndi.gaussian_filter(im[..., 2], smooth_px)
@@ -94,12 +97,18 @@ def masks(photo, green_thr, smooth_px, edge_margin_px, nucleus_margin_px):
 
     cell = largest(ndi.binary_fill_holes((g > green_thr) | (b > 40)))
     nuc = ndi.binary_fill_holes(largest((b > 60) & (b > g)))
+    return im.astype(np.uint8), cell, nuc
+
+
+def regions(cell, nuc, edge_margin_px, nucleus_margin_px):
+    """Where RNP paths may go (the cytoplasm, eroded at the membrane and kept off the
+    nucleus), the nucleus centroid, and how far its farthest pixel lies from it."""
     ys, xs = np.nonzero(nuc)
     centre = np.array([xs.mean(), ys.mean()])
     reach = np.hypot(xs - centre[0], ys - centre[1]).max()
     ok = (ndi.binary_erosion(cell, iterations=edge_margin_px)
           & ~ndi.binary_dilation(nuc, iterations=nucleus_margin_px))
-    return im.astype(np.uint8), cell, nuc, ok, centre, reach
+    return ok, centre, reach
 
 
 def to_px(xy_um, centre, s):
@@ -272,18 +281,23 @@ def simulated_cell(cell, ellipse, centre, s, k, window, size, args):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--photo", type=Path, required=True)
+    ap.add_argument("--cell-file", type=Path, default=Path("cover_cell_geometry.npz"),
+                    help="cell and nucleus outlines (and scale) to simulate in")
+    ap.add_argument("--photo", type=Path, default=None,
+                    help="segment the outlines from this micrograph instead of --cell-file")
+    ap.add_argument("--save-cell-file", type=Path, default=None,
+                    help="with --photo: save the segmented outlines and --px-per-um here")
     ap.add_argument("--seed", type=int, default=17)
     ap.add_argument("--n-rnps", type=int, default=8)
     ap.add_argument("--rnp-minutes", type=float, default=20.0)
     ap.add_argument("--p-driv", type=float, default=0.004)
-    ap.add_argument("--tries", type=int, default=1000, help="RNP paths simulated per slot")
+    ap.add_argument("--tries", type=int, default=1500, help="RNP paths simulated per slot")
     ap.add_argument("--min-gap-um", type=float, default=0.8,
                     help="closest any two RNP paths may come, so each stays distinct")
-    ap.add_argument("--prefer", choices=("hug", "travel"), default="hug",
+    ap.add_argument("--prefer", choices=("hug", "travel"), default="travel",
                     help="among paths that fit: the one running along the most nucleus wall "
                          "(ties: farthest travelled), or simply the farthest travelled")
-    ap.add_argument("--wedge", type=float, default=1.0,
+    ap.add_argument("--wedge", type=float, default=1.5,
                     help="how far an RNP may wander sideways, as a fraction of half the slot spacing")
     ap.add_argument("--rnp-width-um", type=float, default=0.02)
     ap.add_argument("--trap-fraction", type=float, default=0.10,
@@ -319,7 +333,7 @@ def main():
     ap.add_argument("--photo-gamma", type=float, default=0.8,
                     help="brightness curve for the cover photo (<1 lifts the dim green)")
     ap.add_argument("--directed-width-um", type=float, default=0.15)
-    ap.add_argument("--background", choices=("photo", "simulated"), default="photo",
+    ap.add_argument("--background", choices=("photo", "simulated"), default="simulated",
                     help="cover background: the micrograph, or a simulated fluorescence image "
                          "of the model cell (RNP specks, diffuse green, textured nucleus)")
     ap.add_argument("--puncta-brightness", type=float, default=0.4,
@@ -353,9 +367,18 @@ def main():
     sim = importlib.import_module("simulation")
     g = importlib.import_module("goodsell")
 
-    im, cell, nuc, ok, centre, reach = masks(args.photo, args.green_threshold, 6,
-                                             args.edge_margin_px, 3)
-    s = args.px_per_um or reach / (sim.NUCLEUS_RADIUS * 1e6)
+    if args.photo:
+        im, cell, nuc = segment_photo(args.photo, args.green_threshold, 6)
+        px_per_um = args.px_per_um
+        if args.save_cell_file:
+            np.savez_compressed(args.save_cell_file, cell=cell, nuc=nuc, px_per_um=px_per_um or np.nan)
+            print(f"saved the cell and nucleus outlines to {args.save_cell_file}")
+    else:
+        z = np.load(args.cell_file)
+        im, cell, nuc = None, z["cell"], z["nuc"]
+        px_per_um = args.px_per_um or (None if np.isnan(z["px_per_um"]) else float(z["px_per_um"]))
+    ok, centre, reach = regions(cell, nuc, args.edge_margin_px, 3)
+    s = px_per_um or reach / (sim.NUCLEUS_RADIUS * 1e6)
     angles = np.deg2rad(args.rotation_deg) + 2 * np.pi * np.arange(args.n_rnps) / args.n_rnps
     ellipse = None
     if args.geometry == "ellipse":
@@ -369,14 +392,14 @@ def main():
         starts = [R_nuc + 2.5 if args.geometry == "photo" else sim.CELL_RADIUS * 1e6 / 2] * len(angles)
         desc = f"circle of radius {R_nuc:.2f} um"
     R_cell = 2 * max(starts)                    # only bounds the protein; RNPs are not stopped
-    print(f"photo {im.shape[1]}x{im.shape[0]} px at {s:.1f} px/um; nucleus centre "
+    print(f"cell outline {cell.shape[1]}x{cell.shape[0]} px at {s:.1f} px/um; nucleus centre "
           f"({centre[0]:.0f}, {centre[1]:.0f})")
     print(f"model nucleus ({args.geometry}): {desc}; RNPs start "
           f"{min(starts):.2f}-{max(starts):.2f} um from its centre")
 
     # RNP paths, sampled every 10 ms (as drawn): each slot simulated in its own process
     half = np.pi / args.n_rnps * args.wedge
-    key = hashlib.sha1(args.photo.read_bytes() + json.dumps(
+    key = hashlib.sha1(cell.tobytes() + nuc.tobytes() + json.dumps(
         [args.seed, args.tries, args.rnp_minutes, args.p_driv, args.n_rnps, args.rotation_deg,
          args.wedge, s, args.green_threshold, args.edge_margin_px, args.geometry,
          args.ellipse_scale, args.prefer, "hops+settle", "gap", args.min_gap_um]).encode()).hexdigest()[:12]
@@ -666,9 +689,10 @@ def main():
                                       else "no black corner is big enough; left out"))
     render(whole, UPSCALE, {"paths", "bacteria", "labels"}, args.outdir / "photo_overlay.png", L)
     render(whole, UPSCALE, {"paths", "bacteria"}, args.outdir / "photo_overlay_nolabels.png", L)
-    over = Image.open(args.outdir / "photo_overlay.png").convert("RGBA")
-    base = Image.fromarray(im).resize(over.size, Image.BICUBIC).convert("RGBA")
-    Image.alpha_composite(base, over).convert("RGB").save(args.outdir / "photo_preview.png")
+    if im is not None:
+        over = Image.open(args.outdir / "photo_overlay.png").convert("RGBA")
+        base = Image.fromarray(im).resize(over.size, Image.BICUBIC).convert("RGBA")
+        Image.alpha_composite(base, over).convert("RGB").save(args.outdir / "photo_preview.png")
 
     # ---- the cover: full-bleed, no text, the cell as large as fits below a masthead band
     PW, PH = int(round(args.cover_in[0] * DPI)), int(round(args.cover_in[1] * DPI))
@@ -701,6 +725,8 @@ def main():
         page.paste(Image.fromarray((lifted * 255).round().astype(np.uint8)), (round(-X0 * k), round(-Y0 * k)))
         return page
 
+    if args.background == "photo" and im is None:
+        raise SystemExit("--background photo needs --photo")
     if args.background == "simulated":
         page = simulated_cell(cell, ellipse or (R_nuc, R_nuc, 0.0), centre, s, k, window,
                               (PW, PH), args)
@@ -736,7 +762,7 @@ def main():
                                         else "left out (no room)")))
 
     (args.outdir / "photo_choice.json").write_text(json.dumps(
-        {"photo": str(args.photo), "px_per_um": s, "nucleus_centre_px": centre.tolist(),
+        {"source": str(args.photo or args.cell_file), "px_per_um": s, "nucleus_centre_px": centre.tolist(),
          "seed": args.seed, "tries_per_slot": args.tries, "rnp_minutes": args.rnp_minutes,
          "p_driv": args.p_driv, "k": sim.k, "geometry": args.geometry, "background": args.background,
          "nucleus": ({"semi_axes_um": ellipse[:2], "major_axis_deg": float(np.degrees(ellipse[2])),
@@ -744,7 +770,8 @@ def main():
          "wedge": args.wedge, "protein": prot,
          "rnps": [{k_: v for k_, v in c.items() if k_ not in ("xy", "state", "hops")} for c in chosen]},
         indent=2))
-    print(f"wrote {args.outdir}/photo_overlay.png, photo_overlay_nolabels.png, photo_preview.png, "
+    print(f"wrote {args.outdir}/photo_overlay.png, photo_overlay_nolabels.png, "
+          + ("photo_preview.png, " if im is not None else "") + 
           f"{name}.png, {name}_preview.png, photo_choice.json")
 
 
