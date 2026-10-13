@@ -2,10 +2,16 @@
 Fit the cover-art RNP simulation into a micrograph of a real cell.
 
 The cell photo (nucleus in blue, cytoplasm in green) is segmented, the model's circular
-nucleus is centred on the photo's nucleus and scaled so that it just covers it, and each
-RNP slot is filled with a simulated 20-min path that stays inside the green cytoplasm.
+nucleus is centred on the photo's nucleus, and each RNP slot is filled with a simulated
+path that stays inside the green cytoplasm.
 
-    python cover_photo.py --photo cover_output/cell_photo.png     # -> cover_output/photo_*
+    python cover_photo.py --photo cover_output/cell_photo.png --px-per-um 26.2
+
+26.2 px/um is the cover photo's scale: it is the middle cell of Fig. 1F in Moran et al.
+2022 (J Virol, doi:10.1128/jvi.00934-22; A549 cells, VSV-PeGFP green, DAPI blue), and the
+crop is 11.2x the figure, whose 25 um bar is 58.4 px (2.34 px/um). With --geometry photo
+(default) the model's nucleus is resized to cover this cell's (8.5 um) and RNPs start
+2.5 um outside it, as in the model (5 -> 7.5 um); the RNP dynamics are unchanged.
 
 How the paths are chosen (illustration only):
   * The model is rotationally symmetric (circular cell and nucleus, radial directed runs,
@@ -104,6 +110,10 @@ def main():
     ap.add_argument("--rotation-deg", type=float, default=0.0)
     ap.add_argument("--px-per-um", type=float, default=None,
                     help="photo scale (default: model nucleus just covers the photo's)")
+    ap.add_argument("--geometry", choices=("photo", "model"), default="photo",
+                    help="photo: model nucleus resized to just cover the photo's, RNPs start "
+                         "2.5 um outside it (as in the model: 5 -> 7.5 um); model: 5 um nucleus, "
+                         "15 um cell, unchanged")
     ap.add_argument("--protein-seconds", type=float, default=1.0)
     ap.add_argument("--green-threshold", type=float, default=35)
     ap.add_argument("--edge-margin-px", type=int, default=8)
@@ -113,12 +123,19 @@ def main():
     random.seed(args.seed)                     # simulation.py's import-time k draw
     sim = importlib.import_module("simulation")
     g = importlib.import_module("goodsell")
-    R_nuc, R_cell = sim.NUCLEUS_RADIUS * 1e6, sim.CELL_RADIUS * 1e6
 
     im, ok, centre, reach = masks(args.photo, args.green_threshold, 6, args.edge_margin_px, 3)
-    s = args.px_per_um or reach / R_nuc
-    print(f"photo {im.shape[1]}x{im.shape[0]} px; nucleus centre ({centre[0]:.0f}, {centre[1]:.0f}), "
-          f"farthest nucleus pixel {reach:.0f} px -> {s:.1f} px/um")
+    s = args.px_per_um or reach / (sim.NUCLEUS_RADIUS * 1e6)
+    if args.geometry == "photo":
+        # simulation.py's numba functions read these globals when they compile (first call,
+        # into this run's fresh cache); _move starts RNPs at CELL_RADIUS / 2
+        sim.NUCLEUS_RADIUS = reach / s * 1e-6
+        sim.CELL_RADIUS = 2 * (sim.NUCLEUS_RADIUS + 2.5e-6)
+    R_nuc, R_cell = sim.NUCLEUS_RADIUS * 1e6, sim.CELL_RADIUS * 1e6
+    print(f"photo {im.shape[1]}x{im.shape[0]} px at {s:.1f} px/um; nucleus centre "
+          f"({centre[0]:.0f}, {centre[1]:.0f}), reaching {reach:.0f} px = {reach / s:.2f} um")
+    print(f"model geometry ({args.geometry}): nucleus radius {R_nuc:.2f} um, RNPs start at "
+          f"{R_cell / 2:.2f} um, cell radius {R_cell:.2f} um")
 
     # Pool of RNP paths, all started at angle 0 and sampled every 10 ms (as drawn). Paths are
     # simulated one at a time and only a summary is kept: whether each fits each slot, stays
@@ -224,20 +241,24 @@ def main():
         ax.add_collection(LineCollection([pp], colors=PROTEIN, linewidths=0.03 * pt_per_um,
                                          capstyle="round", joinstyle="round", zorder=3.5))
         low = pp[np.argmax(pp[:, 1])]
-        fs = 0.7 * pt_per_um
-        ax.text(low[0], low[1] + 0.4 * s, f"protein, {args.protein_seconds:g} s", ha="center",
+    # text and legend sized relative to the photo, not in um, so they read the same at any scale
+    fs = 0.026 * W * UPSCALE / DPI * 72
+    unit = 0.04 * W                                            # legend swatch / spacing unit
+    if prot:
+        ax.text(low[0], low[1] + 0.3 * unit, f"protein, {args.protein_seconds:g} s", ha="center",
                 va="top", fontsize=fs, color=TEXT, zorder=6)
-    fs = 0.7 * pt_per_um
     x_leg, y_leg = W - 0.30 * W, 0.06 * H
-    for dy, colour, lw, text in ((0, RNP, 0.14, f"RNPs, {args.rnp_minutes:g} min"),
-                                 (1.05, DIRECTED, 0.12, "directed runs")):
-        y = y_leg + dy * s
-        ax.plot([x_leg - 1.5 * s, x_leg - 0.4 * s], [y, y], color=colour, lw=lw * pt_per_um,
-                solid_capstyle="round")
+    for dy, colour, lw_um, text in ((0, RNP, 0.14, f"RNPs, {args.rnp_minutes:g} min"),
+                                    (1.05, DIRECTED, 0.12, "directed runs")):
+        y = y_leg + dy * unit
+        ax.plot([x_leg - 1.2 * unit, x_leg - 0.3 * unit], [y, y], color=colour,
+                lw=max(lw_um * pt_per_um, 0.004 * W * UPSCALE / DPI * 72), solid_capstyle="round")
         ax.text(x_leg, y, text, ha="left", va="center", fontsize=fs, color=TEXT)
     xb, yb = W - 0.06 * W - 5 * s, H - 0.04 * H
-    ax.plot([xb, xb + 5 * s], [yb, yb], color=TEXT, lw=0.08 * pt_per_um, solid_capstyle="butt")
-    ax.text(xb + 2.5 * s, yb - 0.35 * s, "5 µm", ha="center", va="bottom", fontsize=fs, color=TEXT)
+    ax.plot([xb, xb + 5 * s], [yb, yb], color=TEXT, lw=0.004 * W * UPSCALE / DPI * 72,
+            solid_capstyle="butt")
+    ax.text(xb + 2.5 * s, yb - 0.25 * unit, "5 µm", ha="center", va="bottom", fontsize=fs,
+            color=TEXT)
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.outdir / "photo_overlay.png", dpi=DPI, transparent=True)
@@ -248,7 +269,9 @@ def main():
     (args.outdir / "photo_choice.json").write_text(json.dumps(
         {"photo": str(args.photo), "px_per_um": s, "nucleus_centre_px": centre.tolist(),
          "seed": args.seed, "pool": args.pool, "rnp_minutes": args.rnp_minutes,
-         "p_driv": args.p_driv, "k": sim.k, "rnps": chosen, "protein": prot}, indent=2))
+         "p_driv": args.p_driv, "k": sim.k, "geometry": args.geometry,
+         "nucleus_radius_um": R_nuc, "start_radius_um": R_cell / 2, "cell_radius_um": R_cell,
+         "wedge": args.wedge, "rnps": chosen, "protein": prot}, indent=2))
     print(f"wrote {args.outdir}/photo_overlay.png ({over.size[0]}x{over.size[1]}), "
           "photo_preview.png, photo_choice.json")
 
