@@ -6,6 +6,9 @@ is computed here: no micrograph pixels, no AI-generated imagery.
     python cover_cell.py                       # -> cover_output/cover_simulated_final.png
     python cover_cell.py --variant fade        # older parts of each path more transparent
     python cover_cell.py --variant numbered    # RNPs labelled 1-8
+    python cover_cell.py --layout full --masthead tl tr bl br
+                                               # cell filling the page, with a PNAS-style
+                                               # masthead mock-up in each corner
 
 What comes from where:
   * Cell geometry: cover_cell_geometry.npz holds two outlines (cell and nucleus, as
@@ -74,7 +77,7 @@ from matplotlib import patheffects
 from matplotlib.collections import LineCollection
 from matplotlib.colors import to_rgb
 from matplotlib.patches import Polygon
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageColor, ImageDraw, ImageFilter, ImageFont
 from numba import njit
 from scipy import ndimage as ndi
 from scipy.spatial import cKDTree
@@ -278,6 +281,30 @@ def simulated_cell(cell, ellipse, centre, s, k, window, size, args):
     print(f"simulated cell: {n} RNP specks over {area_um2:.0f} um^2 of cytoplasm")
     return Image.fromarray((np.clip(rgb, 0, 1) * 255).round().astype(np.uint8))
 
+def draw_masthead(img, corner, bar_color):
+    """A PNAS-style masthead mock-up in one corner (tl, tr, bl, br), sized and placed like
+    recent PNAS covers: "PNAS" in white about 48% of the cover's width, and a bar beneath
+    from the letters to the nearest side edge (full colour under the letters, fainter beyond)."""
+    W, H = img.size
+    try:
+        font = ImageFont.truetype("/System/Library/Fonts/Avenir Next.ttc", 100, index=0)   # Bold
+        font = ImageFont.truetype(font.path, int(100 * 0.48 * W / font.getlength("PNAS")), index=0)
+    except OSError:
+        font = ImageFont.load_default(size=int(0.13 * H))
+    l, t, r, _ = font.getbbox("PNAS", anchor="ls")
+    text_w, cap = r - l, -t
+    x = 0.12 * W if corner.endswith("l") else 0.86 * W - text_w
+    base = 0.098 * H + cap if corner.startswith("t") else 0.81 * H
+    d = ImageDraw.Draw(img, "RGBA")
+    d.text((x - l, base), "PNAS", font=font, fill="white", anchor="ls")
+    y0 = base + 0.016 * H
+    y1 = y0 + 0.013 * H
+    rgb = ImageColor.getrgb(bar_color)
+    d.rectangle([x, y0, x + text_w, y1], fill=rgb + (255,))
+    d.rectangle([0, y0, x, y1] if corner.endswith("l") else [x + text_w, y0, W, y1], fill=rgb + (140,))
+    return img
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -323,6 +350,16 @@ def main():
     ap.add_argument("--edge-margin-px", type=int, default=8)
     ap.add_argument("--cover-in", type=float, nargs=2, default=(8.5, 11.0), metavar=("W", "H"),
                     help="cover size in inches (at 300 dpi)")
+    ap.add_argument("--layout", choices=("band", "full"), default="band",
+                    help="band: the whole cell below a band left for the masthead; full: the cell "
+                         "fills the page (--fill) and the masthead goes over it")
+    ap.add_argument("--fill", type=float, default=1.0,
+                    help="full layout: 1 = the cell just fills the page, cropped at the sides")
+    ap.add_argument("--masthead", nargs="*", default=[], choices=("tl", "tr", "bl", "br"),
+                    help="also write the cover with a PNAS-style masthead mock-up in each of these corners")
+    ap.add_argument("--bar-color", default="#E2B342",
+                    help="masthead bar colour (PNAS uses #E2B342 gold, #D19850 amber, #9B1E33 "
+                         "crimson and #A07AA7 mauve)")
     ap.add_argument("--masthead-frac", type=float, default=0.26,
                     help="fraction of the cover height kept clear at the top for the masthead")
     ap.add_argument("--source-enlargement", type=float, default=11.2,
@@ -699,9 +736,14 @@ def main():
     ys, xs = np.nonzero(cell)
     bx0, bx1, by0, by1 = xs.min(), xs.max(), ys.min(), ys.max()
     band, margin = args.masthead_frac * PH, 0.035 * PW
-    k = min((PW - 2 * margin) / (bx1 - bx0), (PH - band - 2 * margin) / (by1 - by0))
-    X0 = (bx0 + bx1) / 2 - PW / (2 * k)
-    Y0 = (by0 + by1) / 2 - (band + (PH - band) / 2) / k
+    if args.layout == "full":       # the cell fills the page, cropped at the sides if need be
+        k = max(PW / (bx1 - bx0), PH / (by1 - by0)) * args.fill
+        X0 = (bx0 + bx1) / 2 - PW / (2 * k)
+        Y0 = (by0 + by1) / 2 - PH / (2 * k)
+    else:                           # the whole cell below a band kept clear for the masthead
+        k = min((PW - 2 * margin) / (bx1 - bx0), (PH - band - 2 * margin) / (by1 - by0))
+        X0 = (bx0 + bx1) / 2 - PW / (2 * k)
+        Y0 = (by0 + by1) / 2 - (band + (PH - band) / 2) / k
     window = (X0, Y0, X0 + PW / k, Y0 + PH / k)
     Lc = bacteria_layout(window, False, ("bottom-right", "bottom-left")) if args.bacteria else None
     tmp_paths, tmp_bact = args.outdir / "_cover_paths.png", args.outdir / "_cover_bacteria.png"
@@ -732,7 +774,8 @@ def main():
                               (PW, PH), args)
     else:
         page = photo_page(k)
-    name = f"cover_{args.background}_final" + ("" if args.variant == "plain" else f"_{args.variant}")
+    name = (f"cover_{args.background}_final" + ("" if args.variant == "plain" else f"_{args.variant}")
+            + ("_full" if args.layout == "full" else ""))
 
     def layer(path):
         a = np.asarray(Image.open(path).convert("RGBA")).astype(float) / 255
@@ -750,6 +793,9 @@ def main():
     cover.save(args.outdir / f"{name}.png", dpi=(DPI, DPI))
     tmp_paths.unlink()
     tmp_bact.unlink()
+    for corner in args.masthead:
+        draw_masthead(cover.copy(), corner, args.bar_color).save(
+            args.outdir / f"{name}_masthead_{corner}.png", dpi=(DPI, DPI))
     preview = cover.copy()
     d = ImageDraw.Draw(preview)
     d.rectangle([0.02 * PW, 0.02 * PH, 0.98 * PW, band - 0.02 * PH], outline=(110, 110, 120), width=4)
